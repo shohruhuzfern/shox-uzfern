@@ -21,6 +21,11 @@ function assertEnv() {
   }
 }
 
+/**
+ * Ilova sahifasini ochib, tizimga kiradi va ma'lumotlar (Firebase'dan) to'liq
+ * yuklanguncha kutadi. Chaqiruvchi funksiya ishni tugatgach `browser.close()`
+ * chaqirishi kerak.
+ */
 async function openLoggedInPage() {
   assertEnv();
   const browser = await chromium.launch();
@@ -31,12 +36,19 @@ async function openLoggedInPage() {
   await page.fill("#authPassword", APP_PASSWORD);
   await page.click("#authSubmit");
 
-  await page.waitForSelector("#authOverlay.hidden", { timeout: 30000 });
+  // Auth oynasi yopilishini va asosiy ilova ko'rinishini kutamiz
+  // ("hidden" klassi qo'shilgan elementning o'zi display:none bo'lgani uchun
+  // uni "visible" emas, "attached" holatda kutish kerak)
+  await page.waitForSelector("#authOverlay.hidden", { state: "attached", timeout: 30000 });
+  // Firebase'dan ma'lumotlar kelishi uchun qo'shimcha kutish
   await page.waitForTimeout(3000);
 
   return { browser, page };
 }
 
+/**
+ * Telegram Bot API orqali matnli xabar yuboradi.
+ */
 async function sendTelegramMessage(text) {
   assertEnv();
   const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -50,6 +62,9 @@ async function sendTelegramMessage(text) {
   }
 }
 
+/**
+ * Telegram Bot API orqali rasm (fayl) yuboradi.
+ */
 async function sendTelegramPhoto(filePath, caption) {
   assertEnv();
   const fs = require("fs");
