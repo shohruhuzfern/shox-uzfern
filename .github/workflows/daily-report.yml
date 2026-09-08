@@ -1,0 +1,32 @@
+name: Kunlik Telegram hisobot
+
+on:
+  schedule:
+    # 13:00 UTC = 18:00 Toshkent vaqti (UTC+5)
+    - cron: "0 13 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Bog'liqliklarni o'rnatish
+        run: npm install
+
+      - name: Playwright brauzerini o'rnatish
+        run: npx playwright install --with-deps chromium
+
+      - name: Kunlik hisobotni yuborish
+        env:
+          PAGE_URL: ${{ vars.PAGE_URL }}
+          APP_EMAIL: ${{ secrets.APP_EMAIL }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node scripts/send-daily-report.js
