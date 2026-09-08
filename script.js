@@ -1,0 +1,2364 @@
+"use strict";
+
+/* =========================================================================
+   XODIMLAR TARTIBI — ish maydoni, xodim/loyiha kartalari, ulanishlar
+   Vanilla JS, hech qanday tashqi kutubxonasiz.
+   ========================================================================= */
+
+/* ---------------------------- Konstantalar ---------------------------- */
+
+const STORAGE_KEY = "xodimlarTartibi_v1";
+
+/* ------------------------------ Firebase (bulutli sinxronizatsiya) ------------------------------ */
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAUBndyehu9mbIEhbXO8HWzDxdQW8f88VQ",
+  authDomain: "xodimlar-tartibi.firebaseapp.com",
+  databaseURL: "https://xodimlar-tartibi-default-rtdb.firebaseio.com",
+  projectId: "xodimlar-tartibi",
+  storageBucket: "xodimlar-tartibi.firebasestorage.app",
+  messagingSenderId: "517024555563",
+  appId: "1:517024555563:web:167b4933aafb2f89a2806e",
+  measurementId: "G-TETC4R9764",
+};
+
+firebase.initializeApp(firebaseConfig);
+const fbAuth = firebase.auth();
+const fbDb = firebase.database();
+const FB_STATE_PATH = "appState";
+
+let fbLastSyncedJSON = null; // oxirgi marta yuborgan/qabul qilgan holatning JSON ko'rinishi (o'z-o'ziga qayta ishlov berishning oldini olish uchun)
+let fbPushTimeout = null;
+let fbListenerAttached = false;
+let fbTickStarted = false;
+
+const EMP_W = 190;
+const EMP_H = 92;
+
+// Loyiha kartasi xodim kartasidan sezilarli darajada (~4 barobar maydon bo'yicha) katta:
+// rasm ham ancha kattaroq ko'rinadi.
+const PROJ_W = 360;
+const PROJ_ROW_H = 26;
+const PROJ_TOP_PAD = 20;
+const PROJ_PHOTO_H = 220;
+// Kartaning kontent (rasm + matn + paddinglar) uchun kerak bo'ladigan minimal balandlik —
+// bu qiymat CSS'dagi haqiqiy chiqindilar (padding, margin, shrift balandligi) bo'yicha
+// hisoblab, xavfsizlik uchun zaxira bilan olingan. Balandlik hech qachon bundan kichik
+// bo'lmasligi kerak, aks holda kontent karta ichiga sig'may, ulanish nuqtalari
+// haqiqiy chekkadan ichkariga siljib qoladi.
+const PROJ_CONTENT_MIN_H = 400;
+
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 2.5;
+const ZOOM_STEP = 1.15;
+
+const PHOTO_MAX_DIM = 400;
+const PHOTO_QUALITY = 0.85;
+
+// Ish jadvali: dushanba—shanba 9:00–18:00, tushlik 13:00–14:00, yakshanba dam olish.
+const WORK_SEGMENTS = [
+  [9, 13],
+  [14, 18],
+];
+// Tungi smena (loyiha bo'yicha ixtiyoriy yoqiladi): har kuni 18:00–02:00 (8 soat),
+// jumladan yakshanba kechasi ham — kunduzgi jadvaldan farqli o'laroq, yakshanba
+// bundan mustasno emas. [0,2] va [18,24] jufti kalendar kun chegarasidan
+// (yarim tundan) o'tuvchi 18:00–02:00 oralig'ini ikki bo'lakka bo'lib ifodalaydi.
+const NIGHT_SEGMENTS = [
+  [0, 2],
+  [18, 24],
+];
+const WORK_TICK_MS = 30 * 1000; // loyiha vaqt ko'rsatkichlari har 30 soniyada yangilanadi
+
+// Oylik maoshni soatlik stavkaga aylantirish uchun: 6 kunlik ish haftasi (dushanba-shanba),
+// kuniga 8 soat (9:00-18:00, tushliksiz) — oyiga taxminan 26 ish kuni * 8 soat = 208 soat.
+const MONTHLY_WORK_HOURS = 26 * 8;
+
+/* ------------------------------- Holat --------------------------------- */
+
+/** @type {{employees: object[], projects: object[], connections: object[], view: {panX:number, panY:number, zoom:number}}} */
+let state = {
+  employees: [],
+  projects: [],
+  connections: [],
+  view: { panX: 0, panY: 0, zoom: 1 },
+};
+
+// DOM elementlarga tezkor murojaat uchun xaritalar
+const employeeEls = new Map(); // id -> HTMLElement (faqat ish maydoniga joylashtirilganlar)
+const projectEls = new Map(); // id -> HTMLElement (faqat ish maydoniga joylashtirilganlar)
+const connectionEls = new Map(); // id -> SVGPathElement
+const rosterEls = new Map(); // id -> HTMLElement (chap paneldagi xodim qatori)
+const projRosterEls = new Map(); // id -> HTMLElement (o'ng paneldagi loyiha qatori)
+
+/* ------------------------------ DOM refs -------------------------------- */
+
+const workspace = document.getElementById("workspace");
+const world = document.getElementById("world");
+const svg = document.getElementById("connectionsLayer");
+const cardsLayer = document.getElementById("cardsLayer");
+const emptyHint = document.getElementById("emptyHint");
+const zoomLevelEl = document.getElementById("zoomLevel");
+const sidebarList = document.getElementById("sidebarList");
+const sidebarEmpty = document.getElementById("sidebarEmpty");
+const projectSidebarList = document.getElementById("projectSidebarList");
+const projectSidebarEmpty = document.getElementById("projectSidebarEmpty");
+
+const employeeModal = document.getElementById("employeeModal");
+const projectModal = document.getElementById("projectModal");
+const employeeForm = document.getElementById("employeeForm");
+const projectForm = document.getElementById("projectForm");
+
+/* ------------------------------- Yordamchilar ---------------------------- */
+
+function genId() {
+  return "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+}
+
+function clamp(v, min, max) {
+  return Math.min(max, Math.max(min, v));
+}
+
+function formatMoney(n) {
+  const num = Math.round(Number(n) || 0);
+  return num.toLocaleString("ru-RU").replace(/,/g, " ") + " so'm";
+}
+
+function formatHours(n) {
+  const num = Number(n) || 0;
+  const str = Number.isInteger(num) ? String(num) : String(num);
+  return str + " soat";
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str == null ? "" : String(str);
+  return div.innerHTML;
+}
+
+/* Standart (rasm tanlanmagan) avatarlar — inline SVG data URI */
+
+function defaultAvatarDataUri() {
+  const svgStr = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+      <rect width="120" height="120" fill="#262c3a"/>
+      <circle cx="60" cy="46" r="22" fill="#3a4356"/>
+      <path d="M20 108c4-26 26-38 40-38s36 12 40 38" fill="#3a4356"/>
+    </svg>`;
+  return "data:image/svg+xml;base64," + btoa(svgStr);
+}
+
+function defaultProjectImgDataUri() {
+  const svgStr = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="220" height="90" viewBox="0 0 220 90">
+      <rect width="220" height="90" fill="#262c3a"/>
+      <rect x="26" y="30" width="30" height="30" fill="#3a4356"/>
+      <rect x="64" y="18" width="30" height="42" fill="#3a4356"/>
+      <rect x="102" y="26" width="30" height="34" fill="#3a4356"/>
+      <rect x="140" y="14" width="30" height="46" fill="#3a4356"/>
+    </svg>`;
+  return "data:image/svg+xml;base64," + btoa(svgStr);
+}
+
+const DEFAULT_EMP_AVATAR = defaultAvatarDataUri();
+const DEFAULT_PROJ_IMG = defaultProjectImgDataUri();
+
+/**
+ * Faylni o'qib, kichraytirib (maksimal o'lcham PHOTO_MAX_DIM), JPEG data URI qaytaradi.
+ * @param {File} file
+ * @returns {Promise<string>}
+ */
+function readAndCompressImage(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve("");
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Rasmni o'qib bo'lmadi"));
+      img.onload = () => {
+        let { width, height } = img;
+        const scale = Math.min(1, PHOTO_MAX_DIM / Math.max(width, height));
+        width = Math.max(1, Math.round(width * scale));
+        height = Math.max(1, Math.round(height * scale));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#20242f";
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        resolve(canvas.toDataURL("image/jpeg", PHOTO_QUALITY));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/* Ekran <-> dunyo (world) koordinatalari o'zgartirish */
+
+function clientToWorld(clientX, clientY) {
+  const rect = workspace.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left - state.view.panX) / state.view.zoom,
+    y: (clientY - rect.top - state.view.panY) / state.view.zoom,
+  };
+}
+
+/* ---------------------- Ish jadvaliga asoslangan real vaqt hisobi ---------------------- */
+
+/**
+ * Berilgan kalendar kun uchun (mahalliy 00:00'dan boshlab) qo'llaniladigan ish
+ * segmentlari ro'yxatini [soatBoshi, soatOxiri] juftliklari holida, vaqt bo'yicha
+ * tartiblangan holda qaytaradi. Kunduzgi segmentlar (9-13, 14-18) yakshanba kuni
+ * qo'llanilmaydi; tungi smena segmentlari (0-2, 18-24) — `nightShift` yoqilgan
+ * bo'lsa — HAR kuni, yakshanba ham bundan mustasno emas.
+ */
+function daySegments(dayMidnight, nightShift) {
+  const segs = [];
+  if (dayMidnight.getDay() !== 0) segs.push(...WORK_SEGMENTS);
+  if (nightShift) segs.push(...NIGHT_SEGMENTS);
+  return segs.slice().sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * [startMs, endMs) oralig'idagi berilgan kalendar kunning ish soatlari bilan
+ * kesishgan qismini (soatlarda) hisoblaydi. `dayMidnight` — shu kunning mahalliy
+ * 00:00 vaqti (Date obyekti). `nightShift` yoqilgan bo'lsa, tungi (18:00–02:00)
+ * segmentlar ham hisobga olinadi.
+ */
+function workHoursOnDay(dayMidnight, startMs, endMs, nightShift) {
+  let hours = 0;
+  for (const [sH, eH] of daySegments(dayMidnight, nightShift)) {
+    const segStart = new Date(dayMidnight);
+    segStart.setHours(sH, 0, 0, 0);
+    const segEnd = new Date(dayMidnight);
+    segEnd.setHours(eH, 0, 0, 0);
+    const from = Math.max(segStart.getTime(), startMs);
+    const to = Math.min(segEnd.getTime(), endMs);
+    if (to > from) hours += (to - from) / 3600000;
+  }
+  return hours;
+}
+
+/**
+ * startMs va endMs orasidagi haqiqiy ISH soatlari sonini qaytaradi (tushlik/yakshanba
+ * hisobga olinmagan holda; `nightShift` yoqilgan bo'lsa — tungi 18:00–02:00 smenasi ham
+ * qo'shib hisoblanadi, jumladan yakshanba kechasi ham).
+ */
+function effectiveWorkHoursBetween(startMs, endMs, nightShift) {
+  if (!startMs || !endMs || endMs <= startMs) return 0;
+  let cursor = new Date(startMs);
+  cursor.setHours(0, 0, 0, 0);
+  let total = 0;
+  let guard = 0;
+  while (cursor.getTime() < endMs && guard < 5000) {
+    guard++;
+    total += workHoursOnDay(cursor, startMs, endMs, nightShift);
+    cursor = new Date(cursor);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return total;
+}
+
+/**
+ * `fromMs` dan boshlab `hoursNeeded` ta effektiv ish-soati o'tgandan keyingi real
+ * vaqtni (ms) qaytaradi. `nightShift` yoqilgan bo'lsa, tungi segmentlar ham hisobga
+ * olinadi (shu jumladan hisoblash davomida kunlar orasida).
+ */
+function advanceEffectiveHours(fromMs, hoursNeeded, nightShift) {
+  if (hoursNeeded <= 0) return fromMs;
+  let cursor = new Date(fromMs);
+  let remaining = hoursNeeded;
+  let guard = 0;
+  while (remaining > 1 / 3600 && guard < 5000) {
+    guard++;
+    const dayMidnight = new Date(cursor);
+    dayMidnight.setHours(0, 0, 0, 0);
+    for (const [sH, eH] of daySegments(dayMidnight, nightShift)) {
+      const segStart = new Date(dayMidnight);
+      segStart.setHours(sH, 0, 0, 0);
+      const segEnd = new Date(dayMidnight);
+      segEnd.setHours(eH, 0, 0, 0);
+      if (segEnd.getTime() <= cursor.getTime()) continue;
+      const from = Math.max(segStart.getTime(), cursor.getTime());
+      const availHours = (segEnd.getTime() - from) / 3600000;
+      if (availHours <= 0) continue;
+      if (availHours >= remaining) {
+        return from + remaining * 3600000;
+      }
+      remaining -= availHours;
+      cursor = segEnd;
+    }
+    const nextDay = new Date(dayMidnight);
+    nextDay.setDate(nextDay.getDate() + 1);
+    if (cursor.getTime() < nextDay.getTime()) cursor = nextDay;
+  }
+  return cursor.getTime();
+}
+
+function formatDurationHours(hoursFloat) {
+  const totalMinutes = Math.max(0, Math.round(hoursFloat * 60));
+  const hh = Math.floor(totalMinutes / 60);
+  const mm = totalMinutes % 60;
+  if (hh === 0) return mm + " daqiqa";
+  if (mm === 0) return hh + " soat";
+  return hh + " soat " + mm + " daqiqa";
+}
+
+function formatDateTime(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return pad(d.getDate()) + "." + pad(d.getMonth() + 1) + "." + d.getFullYear() + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+
+/* ---------------------- Loyiha nuqtalari joylashuvi ---------------------- */
+
+/**
+ * Loyiha kartasining balandligi — chap va o'ng tomonlardagi (haqiqiy) ulanishlar
+ * soniga qarab dinamik hisoblanadi. Nuqtalar soni endi qo'lda belgilanmaydi —
+ * har bir yangi ulanish avtomatik ravishda mos tomonga qo'shiladi.
+ */
+function projectHeight(leftCount, rightCount) {
+  const maxSide = Math.max(leftCount, rightCount);
+  // Ikkita mustaqil talab bor: (1) kontent (rasm+matn) sig'ishi uchun minimal balandlik,
+  // (2) nuqtalar bir-biriga yopishib qolmasligi uchun kerakli balandlik.
+  // Ular bir xil vertikal maydonni egallaydi (ustma-ust qo'shilmaydi) — shuning uchun MAX.
+  const pointsSpacingNeeded = PROJ_TOP_PAD * 2 + maxSide * PROJ_ROW_H;
+  return Math.max(PROJ_CONTENT_MIN_H, pointsSpacingNeeded);
+}
+
+/**
+ * Loyiha kartasining HOZIRGI (haqiqiy, DOM'da o'rnatilgan) balandligini qaytaradi.
+ * Karta hali render qilinmagan bo'lsa — formulaga asoslangan minimal qiymatga qaytadi.
+ * Nuqta belgilari va ulanish chiziqlari doim shu HAQIQIY balandlikka qarab joylashishi
+ * kerak — aks holda matn ko'p joy egallab, karta kattalashib ketganda (masalan uzun sana
+ * yoki katta summa tufayli) nuqtalar eski (kichikroq) balandlikka qarab hisoblanib, chiziq
+ * bilan mos kelmay qoladi.
+ */
+function getProjectCardHeight(proj) {
+  const el = projectEls.get(proj.id);
+  if (el) {
+    const h = parseFloat(el.style.height);
+    if (!isNaN(h) && h > 0) return h;
+  }
+  const counts = projectConnCounts(proj.id);
+  return projectHeight(counts.left, counts.right);
+}
+
+/**
+ * Loyiha kartasining balandligini HAQIQIY kontentga (rasm+matn+vaqt bloki) moslab
+ * o'rnatadi — qattiq belgilangan (statik) qiymat emas. Karta matni uzunligiga qarab
+ * (masalan uzun sana, katta summa, ko'p qatorli holat) tabiiy ravishda cho'zilib,
+ * hech qachon tashqariga "toshib" chiqmasligi kafolatlanadi. Shu bilan birga,
+ * ulanish nuqtalari bir-biriga yopishib qolmasligi uchun kerakli minimal balandlikdan
+ * (`projectHeight`) kichik bo'lmaydi.
+ *
+ * Texnika: `el.style.height`ni vaqtincha "auto"ga o'rnatib, brauzerning haqiqiy
+ * (tabiiy) kontent balandligini `scrollHeight` orqali o'lchaymiz — aniq balandlik
+ * berilgan holatda `scrollHeight` chegara chizig'ini noto'g'ri qaytarishi mumkin,
+ * lekin "auto" bilan bu ishonchli ishlaydi.
+ */
+function fitProjectCardHeight(proj) {
+  const el = projectEls.get(proj.id);
+  if (!el) return PROJ_CONTENT_MIN_H;
+  const counts = projectConnCounts(proj.id);
+  const floor = projectHeight(counts.left, counts.right);
+  el.style.height = "auto";
+  const natural = el.scrollHeight;
+  const finalHeight = Math.max(natural, floor);
+  el.style.height = finalHeight + "px";
+  return finalHeight;
+}
+
+/**
+ * Ulanishning HOZIRGI (dinamik) chap/o'ng tomonini hisoblaydi — bu qat'iy saqlangan
+ * qiymat emas, balki xodim va loyihaning JORIY nisbiy joylashuviga qarab har safar
+ * qayta hisoblanadi: xodim loyihadan chapda tursa — xodimning o'ng nuqtasi loyihaning
+ * chap tomoniga ulanadi (bir-biriga "qarab" turadi), aksincha bo'lsa — teskarisi.
+ * Shunday qilib, kartalarni sudrab ko'chirganda ip doim silliq (to'g'ridan-to'g'ri,
+ * qiyshaymasdan) ulanib turadi.
+ */
+function connSides(conn) {
+  const emp = state.employees.find((e) => e.id === conn.employeeId);
+  const proj = state.projects.find((p) => p.id === conn.projectId);
+  if (!emp || !proj) return { empSide: conn.empSide || "right", projSide: conn.projSide || "left" };
+  const empCenterX = emp.x + EMP_W / 2;
+  const projCenterX = proj.x + PROJ_W / 2;
+  return empCenterX <= projCenterX ? { empSide: "right", projSide: "left" } : { empSide: "left", projSide: "right" };
+}
+
+function projectSideConnections(projectId, side) {
+  return state.connections.filter((c) => c.projectId === projectId && connSides(c).projSide === side);
+}
+
+function projectConnCounts(projectId) {
+  return {
+    left: projectSideConnections(projectId, "left").length,
+    right: projectSideConnections(projectId, "right").length,
+  };
+}
+
+/** Berilgan ulanishning loyiha tomonidagi (dunyo koordinatasidagi) nuqtasini hisoblaydi. */
+function projConnPointWorldPos(conn) {
+  const proj = state.projects.find((p) => p.id === conn.projectId);
+  if (!proj) return { x: 0, y: 0 };
+  const side = connSides(conn).projSide;
+  const sideConns = projectSideConnections(proj.id, side);
+  const idx = sideConns.findIndex((c) => c.id === conn.id);
+  const h = getProjectCardHeight(proj);
+  const count = sideConns.length || 1;
+  const y = ((idx + 1) / (count + 1)) * h;
+  const x = side === "left" ? -7 : PROJ_W + 7;
+  return { x: proj.x + x, y: proj.y + y };
+}
+
+function employeePointOffset(side) {
+  return side === "left" ? { offsetX: -7, offsetY: EMP_H / 2 } : { offsetX: EMP_W + 7, offsetY: EMP_H / 2 };
+}
+
+/* ---------------------- Loyiha ish jarayoni (real vaqt asosida) ---------------------- */
+
+/** Loyihaning jami kerakli ish-soati: soni × 1 donaga ketadigan vaqt (1 ta xodim ishlaganda). */
+function projectTotalManHours(proj) {
+  return (Number(proj.qty) || 0) * (Number(proj.hoursPerUnit) || 0);
+}
+
+/** Berilgan xodimning hozir jami nechta loyihaga ulanganini qaytaradi. */
+function employeeConnectionCount(employeeId) {
+  return state.connections.filter((c) => c.employeeId === employeeId).length;
+}
+
+/**
+ * Xodimning BITTA loyihaga qo'shadigan "ulushi": oddiy xodim uchun har doim 1.
+ * "Ko'p tarmoqli" xodim bir vaqtning o'zida N ta loyihaga ulangan bo'lsa, uning
+ * vaqti/soati ular orasida teng bo'linadi — har biriga 1/N ulush tegadi
+ * (masalan 2 ta loyihaga ulangan bo'lsa, har biriga yarim soat hisoblanadi).
+ */
+function employeeWeightOnProject(employeeId) {
+  const n = employeeConnectionCount(employeeId);
+  return n > 0 ? 1 / n : 0;
+}
+
+/** Loyihaga hozir ulangan xodimlarning (ulush bilan hisoblangan) "jonli kuchi" yig'indisi. */
+function projectEmployeeCount(projectId) {
+  return state.connections
+    .filter((c) => c.projectId === projectId)
+    .reduce((sum, c) => sum + employeeWeightOnProject(c.employeeId), 0);
+}
+
+/** Loyihaga hozir ulangan xodimlar ro'yxati. */
+function projectConnectedEmployees(projectId) {
+  const ids = new Set(state.connections.filter((c) => c.projectId === projectId).map((c) => c.employeeId));
+  return state.employees.filter((e) => ids.has(e.id));
+}
+
+/** Xodimning oylik maoshidan soatlik stavkasi. */
+function employeeHourlyRate(emp) {
+  return (Number(emp && emp.salary) || 0) / MONTHLY_WORK_HOURS;
+}
+
+/**
+ * Loyihaga hozir ulangan barcha xodimlarning soatlik stavkalari yig'indisi — har bir
+ * xodimning stavkasi ham (ko'p tarmoqli bo'lsa) uning shu loyihadagi ulushiga
+ * (`employeeWeightOnProject`) ko'ra bo'linib qo'shiladi.
+ */
+function projectHourlyRateSum(projectId) {
+  return state.connections
+    .filter((c) => c.projectId === projectId)
+    .reduce((sum, c) => {
+      const emp = state.employees.find((e) => e.id === c.employeeId);
+      if (!emp) return sum;
+      return sum + employeeHourlyRate(emp) * employeeWeightOnProject(c.employeeId);
+    }, 0);
+}
+
+/**
+ * `checkpointAt` dan `atMs` gacha to'plangan ish-soatlarni (joriy xodimlar soniga ko'paytirib)
+ * `workedManHours`ga, xuddi shu davrdagi ish haqini (soatlik stavkalar yig'indisiga ko'paytirib)
+ * `workedCost`ga qo'shib, checkpointAt'ni yangilaydi. Xodim ulanishi/uzilishi kabi tezlikni
+ * o'zgartiradigan har bir hodisadan OLDIN chaqirilishi kerak — shunda eski tarkib (va uning
+ * narxi) to'g'ri hisoblanadi.
+ */
+function commitProjectProgress(proj, atMs) {
+  if (!proj || !proj.placed || !proj.checkpointAt) return;
+  const now = atMs || Date.now();
+  if (now <= proj.checkpointAt) return;
+  const count = projectEmployeeCount(proj.id);
+  const rateSum = projectHourlyRateSum(proj.id);
+  const hours = effectiveWorkHoursBetween(proj.checkpointAt, now, proj.nightShift);
+  proj.workedManHours = (Number(proj.workedManHours) || 0) + hours * count;
+  proj.workedCost = (Number(proj.workedCost) || 0) + hours * rateSum;
+  // Haqiqiy (real) o'tgan ish vaqti — xodimlar soniga KO'PAYTIRILMAYDI (man-soatdan farqli
+  // o'laroq). Loyihaga necha xodim ulangan bo'lishidan qat'iy nazar, bu maydon "jarayon
+  // qancha real vaqt davomida faol bo'lgani"ni ko'rsatadi (0 xodimda — pauza, hisoblanmaydi).
+  if (count > 0) {
+    proj.workedRealHours = (Number(proj.workedRealHours) || 0) + hours;
+  }
+  proj.checkpointAt = now;
+}
+
+/**
+ * Loyihaning "tungi smena" holatini (yoqiq/o'chiq) almashtiradi. Almashtirishdan OLDIN
+ * hozirgacha to'plangan progress ESKI rejim (jadval) bo'yicha qayd etib qo'yiladi —
+ * shunda allaqachon ishlangan qism qayta hisoblanib ketmaydi, va yangi rejim faqat
+ * shu daqiqadan boshlab kuchga kiradi. Tungi smena vaqtida xodimlarni almashtirish
+ * ham xuddi shu checkpoint mexanizmi orqali (createConnection/deleteConnection
+ * ichidagi commitProjectProgress chaqiruvlari bilan) avtomatik to'g'ri hisoblanadi.
+ */
+function toggleProjectNightShift(id) {
+  const proj = state.projects.find((p) => p.id === id);
+  if (!proj || !proj.placed) return;
+  const now = Date.now();
+  commitProjectProgress(proj, now);
+  proj.checkpointAt = now;
+  proj.nightShift = !proj.nightShift;
+
+  const el = projectEls.get(proj.id);
+  if (el) {
+    const btn = el.querySelector('[data-role="night-toggle"]');
+    if (btn) btn.classList.toggle("active", !!proj.nightShift);
+    el.classList.toggle("night-active", !!proj.nightShift);
+  }
+  updateProjectTimeInfo(proj);
+  saveState();
+}
+
+/** Hozirgi vaqtga qadar (state'ga yozmasdan, faqat ko'rsatish uchun) to'plangan jami ish-soat. */
+function liveWorkedManHours(proj, atMs) {
+  if (!proj.placed || !proj.checkpointAt) return 0;
+  const now = atMs || Date.now();
+  const count = projectEmployeeCount(proj.id);
+  const hours = effectiveWorkHoursBetween(proj.checkpointAt, now, proj.nightShift);
+  return (Number(proj.workedManHours) || 0) + hours * count;
+}
+
+/** Hozirgi vaqtga qadar (state'ga yozmasdan) to'plangan jami ish haqi (so'm). */
+function liveWorkedCost(proj, atMs) {
+  if (!proj.placed || !proj.checkpointAt) return 0;
+  const now = atMs || Date.now();
+  const rateSum = projectHourlyRateSum(proj.id);
+  const hours = effectiveWorkHoursBetween(proj.checkpointAt, now, proj.nightShift);
+  return (Number(proj.workedCost) || 0) + hours * rateSum;
+}
+
+/**
+ * Hozirgi vaqtga qadar (state'ga yozmasdan) to'plangan HAQIQIY (real) ish vaqti — soat.
+ * Man-soatdan farqli o'laroq, ulangan xodimlar soniga KO'PAYTIRILMAYDI: loyihaga 1 ta
+ * xodim ulangan bo'lsa ham, 5 ta ulangan bo'lsa ham, bu son bir xil — "jarayon real
+ * vaqtda qancha davom etgani"ni ko'rsatadi (0 xodimda — pauza, o'smaydi).
+ */
+function liveWorkedRealHours(proj, atMs) {
+  if (!proj.placed || !proj.checkpointAt) return 0;
+  const now = atMs || Date.now();
+  const count = projectEmployeeCount(proj.id);
+  const hours = count > 0 ? effectiveWorkHoursBetween(proj.checkpointAt, now, proj.nightShift) : 0;
+  return (Number(proj.workedRealHours) || 0) + hours;
+}
+
+/**
+ * Loyihaning joriy vaqt va xarajat holatini hisoblaydi:
+ * {total, worked, done, remainingHours, etaMs, paused, workedCost, projectedTotalCost}.
+ * `projectedTotalCost` — hozirgacha sarflangan + joriy jamoa shu tezlikda davom etsa
+ * ketadigan taxminiy qo'shimcha xarajat (loyiha tugagach — aniq yakuniy xarajat).
+ */
+function projectProgressInfo(proj, atMs) {
+  const now = atMs || Date.now();
+  const total = projectTotalManHours(proj);
+  const worked = liveWorkedManHours(proj, now);
+  const workedCost = liveWorkedCost(proj, now);
+  const realHours = liveWorkedRealHours(proj, now);
+  const count = projectEmployeeCount(proj.id);
+  const rateSum = projectHourlyRateSum(proj.id);
+  const done = total > 0 && worked >= total;
+  let remainingHours = Math.max(0, total - worked);
+  let etaMs = null;
+  let projectedTotalCost = workedCost;
+  if (!done && count > 0) {
+    const remainingRealHours = remainingHours / count;
+    etaMs = advanceEffectiveHours(now, remainingRealHours, proj.nightShift);
+    projectedTotalCost = workedCost + remainingRealHours * rateSum;
+  }
+  return {
+    total,
+    worked: Math.min(worked, total),
+    realHours,
+    done,
+    remainingHours,
+    etaMs,
+    paused: !done && count === 0,
+    workedCost,
+    projectedTotalCost,
+  };
+}
+
+/* ------------------------------ Modal boshqaruvi ------------------------------ */
+
+function openModal(modalEl) {
+  modalEl.classList.remove("hidden");
+}
+function closeModal(modalEl) {
+  modalEl.classList.add("hidden");
+}
+
+document.querySelectorAll("[data-close]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const modal = document.getElementById(btn.dataset.close);
+    if (modal === employeeModal) editingEmployeeId = null;
+    if (modal === projectModal) editingProjectId = null;
+    closeModal(modal);
+  });
+});
+
+[employeeModal, projectModal].forEach((modal) => {
+  modal.addEventListener("mousedown", (e) => {
+    if (e.target === modal) {
+      if (modal === employeeModal) editingEmployeeId = null;
+      if (modal === projectModal) editingProjectId = null;
+      closeModal(modal);
+    }
+  });
+});
+
+/** null bo'lsa — yangi xodim qo'shish rejimi; aks holda shu id'li xodim tahrirlanmoqda. */
+let editingEmployeeId = null;
+
+const employeeModalTitle = employeeModal.querySelector("h2");
+const employeeModalSubmitBtn = employeeForm.querySelector('button[type="submit"]');
+
+function resetEmployeeModalForCreate() {
+  editingEmployeeId = null;
+  employeeModalTitle.textContent = "Yangi xodim";
+  employeeModalSubmitBtn.textContent = "OK";
+  employeeForm.reset();
+  const preview = document.getElementById("empPhotoPreview");
+  preview.classList.remove("has-photo");
+  preview.dataset.photo = "";
+}
+
+document.getElementById("btnAddEmployee").addEventListener("click", () => {
+  resetEmployeeModalForCreate();
+  openModal(employeeModal);
+});
+
+function openEditEmployeeModal(id) {
+  const emp = state.employees.find((e) => e.id === id);
+  if (!emp) return;
+
+  editingEmployeeId = id;
+  employeeModalTitle.textContent = "Xodimni tahrirlash";
+  employeeModalSubmitBtn.textContent = "Saqlash";
+
+  document.getElementById("empName").value = emp.name;
+  document.getElementById("empPosition").value = emp.position;
+  document.getElementById("empSalary").value = emp.salary;
+  document.getElementById("empMultiBranch").checked = !!emp.multiBranch;
+  document.getElementById("empPhoto").value = "";
+
+  const preview = document.getElementById("empPhotoPreview");
+  const img = document.getElementById("empPhotoImg");
+  if (emp.photo) {
+    img.src = emp.photo;
+    preview.dataset.photo = emp.photo;
+    preview.classList.add("has-photo");
+  } else {
+    preview.dataset.photo = "";
+    preview.classList.remove("has-photo");
+  }
+
+  openModal(employeeModal);
+}
+
+/** null bo'lsa — yangi loyiha qo'shish rejimi; aks holda shu id'li loyiha tahrirlanmoqda. */
+let editingProjectId = null;
+
+const projectModalTitle = projectModal.querySelector("h2");
+const projectModalSubmitBtn = projectForm.querySelector('button[type="submit"]');
+
+function resetProjectModalForCreate() {
+  editingProjectId = null;
+  projectModalTitle.textContent = "Yangi loyiha";
+  projectModalSubmitBtn.textContent = "OK";
+  projectForm.reset();
+  const preview = document.getElementById("projPhotoPreview");
+  preview.classList.remove("has-photo");
+  preview.dataset.photo = "";
+}
+
+document.getElementById("btnAddProject").addEventListener("click", () => {
+  resetProjectModalForCreate();
+  openModal(projectModal);
+});
+
+function openEditProjectModal(id) {
+  const proj = state.projects.find((p) => p.id === id);
+  if (!proj) return;
+
+  editingProjectId = id;
+  projectModalTitle.textContent = "Loyihani tahrirlash";
+  projectModalSubmitBtn.textContent = "Saqlash";
+
+  document.getElementById("projName").value = proj.name;
+  document.getElementById("projQty").value = proj.qty;
+  document.getElementById("projHoursPerUnit").value = proj.hoursPerUnit;
+  document.getElementById("projPhoto").value = "";
+
+  const preview = document.getElementById("projPhotoPreview");
+  const img = document.getElementById("projPhotoImg");
+  if (proj.photo) {
+    img.src = proj.photo;
+    preview.dataset.photo = proj.photo;
+    preview.classList.add("has-photo");
+  } else {
+    preview.dataset.photo = "";
+    preview.classList.remove("has-photo");
+  }
+
+  openModal(projectModal);
+}
+
+/* ------------------------------ Ro'yxat qatori uchun kontekst menyu ------------------------------ */
+
+const rosterContextMenu = document.createElement("div");
+rosterContextMenu.className = "context-menu hidden";
+rosterContextMenu.innerHTML = `
+  <button type="button" data-action="edit">Tahrirlash</button>
+  <button type="button" data-action="delete">O'chirish</button>
+`;
+document.body.appendChild(rosterContextMenu);
+
+let contextMenuTargetId = null;
+let contextMenuTargetType = null; // "employee" | "project"
+
+function openRosterContextMenu(clientX, clientY, id, type) {
+  contextMenuTargetId = id;
+  contextMenuTargetType = type;
+  rosterContextMenu.style.left = clientX + "px";
+  rosterContextMenu.style.top = clientY + "px";
+  rosterContextMenu.classList.remove("hidden");
+
+  // Ekrandan tashqariga chiqib ketmasligi uchun moslashtirish
+  const rect = rosterContextMenu.getBoundingClientRect();
+  const overflowX = rect.right - window.innerWidth;
+  const overflowY = rect.bottom - window.innerHeight;
+  if (overflowX > 0) rosterContextMenu.style.left = clientX - overflowX + "px";
+  if (overflowY > 0) rosterContextMenu.style.top = clientY - overflowY + "px";
+}
+
+function closeRosterContextMenu() {
+  rosterContextMenu.classList.add("hidden");
+  contextMenuTargetId = null;
+  contextMenuTargetType = null;
+}
+
+rosterContextMenu.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn || !contextMenuTargetId || !contextMenuTargetType) return;
+  const action = btn.dataset.action;
+  const id = contextMenuTargetId;
+  const type = contextMenuTargetType;
+  closeRosterContextMenu();
+
+  if (type === "employee") {
+    if (action === "edit") openEditEmployeeModal(id);
+    if (action === "delete") deleteEmployee(id);
+  } else if (type === "project") {
+    if (action === "edit") openEditProjectModal(id);
+    if (action === "delete") deleteProject(id);
+  }
+});
+
+document.addEventListener("mousedown", (e) => {
+  if (!rosterContextMenu.classList.contains("hidden") && !rosterContextMenu.contains(e.target)) {
+    closeRosterContextMenu();
+  }
+});
+
+document.addEventListener("contextmenu", (e) => {
+  if (!e.target.closest(".roster-item")) closeRosterContextMenu();
+});
+
+window.addEventListener("blur", closeRosterContextMenu);
+
+document.getElementById("empPhoto").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const dataUri = await readAndCompressImage(file);
+  const preview = document.getElementById("empPhotoPreview");
+  const img = document.getElementById("empPhotoImg");
+  img.src = dataUri;
+  preview.dataset.photo = dataUri;
+  preview.classList.add("has-photo");
+});
+
+document.getElementById("projPhoto").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const dataUri = await readAndCompressImage(file);
+  const preview = document.getElementById("projPhotoPreview");
+  const img = document.getElementById("projPhotoImg");
+  img.src = dataUri;
+  preview.dataset.photo = dataUri;
+  preview.classList.add("has-photo");
+});
+
+employeeForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = document.getElementById("empName").value.trim();
+  const position = document.getElementById("empPosition").value.trim();
+  const salary = Number(document.getElementById("empSalary").value);
+  const photo = document.getElementById("empPhotoPreview").dataset.photo || "";
+  const multiBranch = document.getElementById("empMultiBranch").checked;
+  if (!name || !position) return;
+
+  if (editingEmployeeId) {
+    // Tahrirlash rejimi: mavjud xodim ma'lumotlari yangilanadi.
+    const emp = state.employees.find((x) => x.id === editingEmployeeId);
+    if (emp) {
+      const wasMultiBranch = !!emp.multiBranch;
+      emp.name = name;
+      emp.position = position;
+      emp.salary = salary;
+      emp.photo = photo;
+      emp.multiBranch = multiBranch;
+      updateRosterItemContent(emp);
+      if (emp.placed) updateEmployeeCardContent(emp);
+
+      // "Ko'p tarmoqli" o'chirilganda, xodim hozircha bir nechta loyihaga ulangan bo'lishi
+      // mumkin — bunday holda faqat birinchi ulanish qoldirilib, qolganlari (avvalgi ulush
+      // bilan progressni to'g'ri qayd etgan holda) deleteConnection orqali uziladi.
+      if (wasMultiBranch && !multiBranch) {
+        const conns = state.connections.filter((c) => c.employeeId === emp.id);
+        conns.slice(1).forEach((c) => deleteConnection(c.id));
+      }
+
+      saveState();
+    }
+    editingEmployeeId = null;
+    closeModal(employeeModal);
+    return;
+  }
+
+  // Yangi xodim avval faqat chap paneldagi ro'yxatga qo'shiladi.
+  // Ish maydonida karta faqat foydalanuvchi uni sudrab tashlagach paydo bo'ladi.
+  const employee = {
+    id: genId(),
+    name,
+    position,
+    salary,
+    photo,
+    multiBranch,
+    x: 0,
+    y: 0,
+    placed: false,
+  };
+  state.employees.push(employee);
+  renderRosterItem(employee);
+  updateSidebarEmptyState();
+  saveState();
+  closeModal(employeeModal);
+});
+
+projectForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = document.getElementById("projName").value.trim();
+  const qty = Math.max(1, Math.round(Number(document.getElementById("projQty").value)));
+  const hoursPerUnit = Math.max(0, Number(document.getElementById("projHoursPerUnit").value));
+  const photo = document.getElementById("projPhotoPreview").dataset.photo || "";
+  if (!name) return;
+
+  if (editingProjectId) {
+    // Tahrirlash rejimi: mavjud loyiha ma'lumotlari yangilanadi.
+    // Diqqat: soni/vaqt me'yori o'zgartirilsa ham, ish jarayoni (boshlangan vaqt, to'plangan
+    // ish-soat) qayta boshlanmaydi — faqat "kerakli jami vaqt" yangi qiymatga moslanadi.
+    const proj = state.projects.find((x) => x.id === editingProjectId);
+    if (proj) {
+      proj.name = name;
+      proj.qty = qty;
+      proj.hoursPerUnit = hoursPerUnit;
+      proj.photo = photo;
+
+      updateProjectRosterItemContent(proj);
+      if (proj.placed) updateProjectCardContent(proj);
+
+      saveState();
+    }
+    editingProjectId = null;
+    closeModal(projectModal);
+    return;
+  }
+
+  // Yangi loyiha avval faqat o'ng paneldagi ro'yxatga qo'shiladi.
+  // Ish maydonida to'rtburchak faqat foydalanuvchi uni sudrab tashlagach paydo bo'ladi.
+  // Ulanish nuqtalari soni endi qo'lda belgilanmaydi — xodimlar ulangan sari
+  // avtomatik ravishda mos tomonga (chap/o'ng) qo'shilib boradi.
+  const project = {
+    id: genId(),
+    name,
+    qty,
+    hoursPerUnit,
+    photo,
+    x: 0,
+    y: 0,
+    placed: false,
+    startedAt: null,
+    checkpointAt: null,
+    workedManHours: 0,
+    workedCost: 0,
+    workedRealHours: 0,
+    nightShift: false,
+  };
+  state.projects.push(project);
+  renderProjectRosterItem(project);
+  updateProjectSidebarEmptyState();
+  saveState();
+  closeModal(projectModal);
+});
+
+function getViewportCenterWorld() {
+  const rect = workspace.getBoundingClientRect();
+  return clientToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
+}
+
+function updateEmptyHint() {
+  const hasAny = employeeEls.size > 0 || projectEls.size > 0;
+  emptyHint.style.display = hasAny ? "none" : "block";
+}
+
+function updateSidebarEmptyState() {
+  sidebarEmpty.style.display = state.employees.length > 0 ? "none" : "block";
+  updateEmployeeStats();
+}
+
+function updateProjectSidebarEmptyState() {
+  projectSidebarEmpty.style.display = state.projects.length > 0 ? "none" : "block";
+  updateProjectStats();
+}
+
+/** Chap paneldagi "Xodimlar soni" / "Ishlayotgan xodimlar" hisoblagichlarini yangilaydi. */
+function updateEmployeeStats() {
+  const totalEl = document.getElementById("statEmployeeTotal");
+  const workingEl = document.getElementById("statEmployeeWorking");
+  if (!totalEl || !workingEl) return;
+  totalEl.textContent = state.employees.length;
+  workingEl.textContent = state.employees.filter((e) => e.placed).length;
+}
+
+/** O'ng paneldagi "Loyihalar soni" / "Jarayon boshlangan loyihalar" hisoblagichlarini yangilaydi. */
+function updateProjectStats() {
+  const totalEl = document.getElementById("statProjectTotal");
+  const startedEl = document.getElementById("statProjectStarted");
+  if (!totalEl || !startedEl) return;
+  totalEl.textContent = state.projects.length;
+  startedEl.textContent = state.projects.filter((p) => p.placed).length;
+}
+
+/* ------------------------------ Render: Xodim ------------------------------ */
+
+function renderEmployee(emp) {
+  const el = document.createElement("div");
+  el.className = "card employee-card" + (emp.multiBranch ? " multi-branch" : "");
+  el.dataset.id = emp.id;
+  el.style.left = emp.x + "px";
+  el.style.top = emp.y + "px";
+
+  el.innerHTML = `
+    <button class="card-delete" title="O'chirish" data-role="delete">×</button>
+    <div class="conn-point conn-left" data-side="left" data-owner="employee" data-id="${emp.id}"></div>
+    <img class="emp-photo" src="${emp.photo || DEFAULT_EMP_AVATAR}" alt="">
+    <div class="emp-body">
+      <div class="emp-name">${escapeHtml(emp.name)}</div>
+      <div class="emp-position">${escapeHtml(emp.position)}</div>
+      <div class="emp-salary">${formatMoney(emp.salary)}</div>
+    </div>
+    <div class="conn-point conn-right" data-side="right" data-owner="employee" data-id="${emp.id}"></div>
+  `;
+
+  cardsLayer.appendChild(el);
+  employeeEls.set(emp.id, el);
+
+  attachCardDrag(el, emp, "employee");
+  el.querySelector('[data-role="delete"]').addEventListener("mousedown", (e) => e.stopPropagation());
+  el.querySelector('[data-role="delete"]').addEventListener("click", (e) => {
+    e.stopPropagation();
+    // Ish maydonidagi × faqat kartani ish maydonidan olib tashlaydi —
+    // xodim ro'yxatda ("joylashtirilmagan" holatda) saqlanib qoladi.
+    unplaceEmployee(emp.id);
+  });
+
+  el.querySelectorAll(".conn-point").forEach((pointEl) => {
+    attachConnectionPointHandlers(pointEl);
+  });
+
+  updateEmployeeConnPointVisual(emp.id);
+}
+
+function updateEmployeeCardContent(emp) {
+  const el = employeeEls.get(emp.id);
+  if (!el) return;
+  el.querySelector(".emp-photo").src = emp.photo || DEFAULT_EMP_AVATAR;
+  el.querySelector(".emp-name").textContent = emp.name;
+  el.querySelector(".emp-position").textContent = emp.position;
+  el.querySelector(".emp-salary").textContent = formatMoney(emp.salary);
+  el.classList.toggle("multi-branch", !!emp.multiBranch);
+}
+
+/**
+ * Xodim kartasini ish maydonidan olib tashlaydi (ulanishlari bilan birga),
+ * lekin xodimning o'zini va uning ro'yxatdagi qatorini SAQLAB QOLADI —
+ * u qayta ro'yxatdan sudrab tashlanishi mumkin bo'lib qoladi.
+ */
+function unplaceEmployee(id) {
+  const emp = state.employees.find((e) => e.id === id);
+  const el = employeeEls.get(id);
+  if (el) el.remove();
+  employeeEls.delete(id);
+
+  const removed = state.connections.filter((c) => c.employeeId === id);
+  const unplaceNow = Date.now();
+  removed.forEach((c) => {
+    const p = state.projects.find((x) => x.id === c.projectId);
+    if (p) commitProjectProgress(p, unplaceNow);
+  });
+  state.connections = state.connections.filter((c) => c.employeeId !== id);
+  removed.forEach((c) => removeConnectionEl(c.id));
+  removed.forEach((c) => refreshProjectLayout(c.projectId));
+
+  if (emp) {
+    emp.placed = false;
+    emp.x = 0;
+    emp.y = 0;
+  }
+
+  updateRosterItemPlacedState(id);
+  updateEmptyHint();
+  saveState();
+}
+
+function updateEmployeeConnPointVisual(empId) {
+  const el = employeeEls.get(empId);
+  if (!el) return;
+  const conns = state.connections.filter((c) => c.employeeId === empId);
+  el.querySelectorAll(".conn-point").forEach((p) => p.classList.remove("occupied"));
+  conns.forEach((conn) => {
+    const activeSide = connSides(conn).empSide;
+    const pointEl = el.querySelector(`.conn-point[data-side="${activeSide}"]`);
+    if (pointEl) pointEl.classList.add("occupied");
+  });
+}
+
+/* ------------------------------ Xodimlar ro'yxati (sidebar) ------------------------------ */
+
+function renderRosterItem(emp) {
+  const row = document.createElement("div");
+  row.className = "roster-item" + (emp.placed ? " placed" : "");
+  row.dataset.id = emp.id;
+
+  row.innerHTML = `
+    <img class="roster-photo" src="${emp.photo || DEFAULT_EMP_AVATAR}" alt="">
+    <div class="roster-info">
+      <div class="roster-name">${escapeHtml(emp.name)}</div>
+      <div class="roster-position">${escapeHtml(emp.position)}</div>
+      <div class="roster-salary">${formatMoney(emp.salary)}</div>
+      <div class="roster-badge">✓ Joylashtirilgan</div>
+    </div>
+    <button class="roster-delete" title="O'chirish">×</button>
+  `;
+
+  sidebarList.appendChild(row);
+  rosterEls.set(emp.id, row);
+
+  const delBtn = row.querySelector(".roster-delete");
+  delBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+  delBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    // Ro'yxatdagi × — xodimni hammasidan (ro'yxat + ish maydoni) butunlay o'chiradi.
+    deleteEmployee(emp.id);
+  });
+
+  row.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    openRosterContextMenu(e.clientX, e.clientY, emp.id, "employee");
+  });
+
+  attachRosterDrag(row, emp);
+}
+
+function updateRosterItemPlacedState(id) {
+  const row = rosterEls.get(id);
+  if (row) {
+    const emp = state.employees.find((e) => e.id === id);
+    row.classList.toggle("placed", !!(emp && emp.placed));
+  }
+  updateEmployeeStats();
+}
+
+function updateRosterItemContent(emp) {
+  const row = rosterEls.get(emp.id);
+  if (!row) return;
+  row.querySelector(".roster-photo").src = emp.photo || DEFAULT_EMP_AVATAR;
+  row.querySelector(".roster-name").textContent = emp.name;
+  row.querySelector(".roster-position").textContent = emp.position;
+  row.querySelector(".roster-salary").textContent = formatMoney(emp.salary);
+}
+
+function isPointInsideWorkspace(clientX, clientY) {
+  const rect = workspace.getBoundingClientRect();
+  return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+}
+
+function attachRosterDrag(rowEl, emp) {
+  rowEl.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest(".roster-delete")) return;
+    const current = state.employees.find((x) => x.id === emp.id);
+    if (!current || current.placed) return; // allaqachon joylashtirilgan — panel orqali qayta ko'chirilmaydi
+    e.preventDefault();
+    startRosterDrag(current, rowEl, e);
+  });
+}
+
+function startRosterDrag(emp, rowEl, startEvent) {
+  const ghost = document.createElement("div");
+  ghost.className = "roster-ghost";
+  ghost.innerHTML = `<img src="${emp.photo || DEFAULT_EMP_AVATAR}" alt=""><span>${escapeHtml(emp.name)}</span>`;
+  document.body.appendChild(ghost);
+
+  function positionGhost(clientX, clientY) {
+    ghost.style.left = clientX + 14 + "px";
+    ghost.style.top = clientY + 10 + "px";
+  }
+  positionGhost(startEvent.clientX, startEvent.clientY);
+
+  rowEl.classList.add("dragging-source");
+
+  function onMove(ev) {
+    positionGhost(ev.clientX, ev.clientY);
+    workspace.classList.toggle("drop-target", isPointInsideWorkspace(ev.clientX, ev.clientY));
+  }
+
+  function onUp(ev) {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    ghost.remove();
+    rowEl.classList.remove("dragging-source");
+    workspace.classList.remove("drop-target");
+
+    if (isPointInsideWorkspace(ev.clientX, ev.clientY)) {
+      placeEmployeeOnCanvas(emp, ev.clientX, ev.clientY);
+    }
+  }
+
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
+function placeEmployeeOnCanvas(emp, clientX, clientY) {
+  const worldPos = clientToWorld(clientX, clientY);
+  emp.x = Math.round(worldPos.x - EMP_W / 2);
+  emp.y = Math.round(worldPos.y - EMP_H / 2);
+  emp.placed = true;
+
+  renderEmployee(emp);
+  updateRosterItemPlacedState(emp.id);
+  updateEmptyHint();
+  saveState();
+}
+
+/* ------------------------------ Loyihalar ro'yxati (o'ng panel) ------------------------------ */
+
+function renderProjectRosterItem(proj) {
+  const row = document.createElement("div");
+  row.className = "roster-item" + (proj.placed ? " placed" : "");
+  row.dataset.id = proj.id;
+
+  row.innerHTML = `
+    <img class="roster-photo" src="${proj.photo || DEFAULT_PROJ_IMG}" alt="">
+    <div class="roster-info">
+      <div class="roster-name">${escapeHtml(proj.name)}</div>
+      <div class="roster-position">${projectQtyLabel(proj)}</div>
+      <div class="roster-salary">${projectConnectedLabel(proj.id)}</div>
+      <div class="roster-badge">✓ Joylashtirilgan</div>
+    </div>
+    <button class="roster-delete" title="O'chirish">×</button>
+  `;
+
+  projectSidebarList.appendChild(row);
+  projRosterEls.set(proj.id, row);
+
+  const delBtn = row.querySelector(".roster-delete");
+  delBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+  delBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    // Ro'yxatdagi × — loyihani hammasidan (ro'yxat + ish maydoni) butunlay o'chiradi.
+    deleteProject(proj.id);
+  });
+
+  row.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    openRosterContextMenu(e.clientX, e.clientY, proj.id, "project");
+  });
+
+  attachProjectRosterDrag(row, proj);
+}
+
+function updateProjectRosterItemPlacedState(id) {
+  const row = projRosterEls.get(id);
+  if (row) {
+    const proj = state.projects.find((p) => p.id === id);
+    row.classList.toggle("placed", !!(proj && proj.placed));
+  }
+  updateProjectStats();
+}
+
+function projectConnectedLabel(projectId) {
+  const n = state.connections.filter((c) => c.projectId === projectId).length;
+  return n + " ta xodim ulangan";
+}
+
+function projectQtyLabel(proj) {
+  return proj.qty + " dona × " + formatHours(proj.hoursPerUnit) + " = " + formatHours(projectTotalManHours(proj));
+}
+
+function updateProjectRosterItemContent(proj) {
+  const row = projRosterEls.get(proj.id);
+  if (!row) return;
+  row.querySelector(".roster-photo").src = proj.photo || DEFAULT_PROJ_IMG;
+  row.querySelector(".roster-name").textContent = proj.name;
+  row.querySelector(".roster-position").textContent = projectQtyLabel(proj);
+  row.querySelector(".roster-salary").textContent = projectConnectedLabel(proj.id);
+}
+
+function attachProjectRosterDrag(rowEl, proj) {
+  rowEl.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest(".roster-delete")) return;
+    const current = state.projects.find((x) => x.id === proj.id);
+    if (!current || current.placed) return; // allaqachon joylashtirilgan — panel orqali qayta ko'chirilmaydi
+    e.preventDefault();
+    startProjectRosterDrag(current, rowEl, e);
+  });
+}
+
+function startProjectRosterDrag(proj, rowEl, startEvent) {
+  const ghost = document.createElement("div");
+  ghost.className = "roster-ghost";
+  ghost.innerHTML = `<img src="${proj.photo || DEFAULT_PROJ_IMG}" alt=""><span>${escapeHtml(proj.name)}</span>`;
+  document.body.appendChild(ghost);
+
+  function positionGhost(clientX, clientY) {
+    ghost.style.left = clientX + 14 + "px";
+    ghost.style.top = clientY + 10 + "px";
+  }
+  positionGhost(startEvent.clientX, startEvent.clientY);
+
+  rowEl.classList.add("dragging-source");
+
+  function onMove(ev) {
+    positionGhost(ev.clientX, ev.clientY);
+    workspace.classList.toggle("drop-target", isPointInsideWorkspace(ev.clientX, ev.clientY));
+  }
+
+  function onUp(ev) {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    ghost.remove();
+    rowEl.classList.remove("dragging-source");
+    workspace.classList.remove("drop-target");
+
+    if (isPointInsideWorkspace(ev.clientX, ev.clientY)) {
+      placeProjectOnCanvas(proj, ev.clientX, ev.clientY);
+    }
+  }
+
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
+function placeProjectOnCanvas(proj, clientX, clientY) {
+  const worldPos = clientToWorld(clientX, clientY);
+  const h = projectHeight(0, 0); // yangi joylashtirilgan loyihada ulanishlar hali yo'q
+  proj.x = Math.round(worldPos.x - PROJ_W / 2);
+  proj.y = Math.round(worldPos.y - h / 2);
+  proj.placed = true;
+
+  // Ish maydoniga har safar (qayta) tortib tashlanganda, vaqt hisoblagichi
+  // shu daqiqadan boshlab yangidan ishga tushadi.
+  const now = Date.now();
+  proj.startedAt = now;
+  proj.checkpointAt = now;
+  proj.workedManHours = 0;
+  proj.workedCost = 0;
+  proj.workedRealHours = 0;
+
+  renderProject(proj);
+  updateProjectRosterItemPlacedState(proj.id);
+  updateEmptyHint();
+  saveState();
+}
+
+/* ------------------------------ Render: Loyiha ------------------------------ */
+
+function renderProject(proj) {
+  const el = document.createElement("div");
+  el.className = "card project-card";
+  el.dataset.id = proj.id;
+  el.style.left = proj.x + "px";
+  el.style.top = proj.y + "px";
+  el.style.width = PROJ_W + "px";
+
+  el.innerHTML = `
+    <button class="card-delete" title="O'chirish" data-role="delete">×</button>
+    <button type="button" class="night-toggle" data-role="night-toggle" title="Tungi smena (18:00–02:00)">
+      <span class="night-toggle-icon">🌙</span>
+      <span class="night-toggle-text">Tungi smena</span>
+      <span class="night-toggle-switch"><span class="night-toggle-knob"></span></span>
+    </button>
+    <img class="proj-photo" src="${proj.photo || DEFAULT_PROJ_IMG}" alt="">
+    <div class="proj-name">${escapeHtml(proj.name)}</div>
+    <div class="proj-hours">${escapeHtml(projectQtyLabel(proj))}</div>
+    <div class="proj-time"></div>
+  `;
+
+  cardsLayer.appendChild(el);
+  projectEls.set(proj.id, el);
+
+  attachCardDrag(el, proj, "project");
+  const nightBtn = el.querySelector('[data-role="night-toggle"]');
+  nightBtn.classList.toggle("active", !!proj.nightShift);
+  el.classList.toggle("night-active", !!proj.nightShift);
+  nightBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+  nightBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleProjectNightShift(proj.id);
+  });
+  el.querySelector('[data-role="delete"]').addEventListener("mousedown", (e) => e.stopPropagation());
+  el.querySelector('[data-role="delete"]').addEventListener("click", (e) => {
+    e.stopPropagation();
+    // Ish maydonidagi × faqat to'rtburchakni ish maydonidan olib tashlaydi —
+    // loyiha ro'yxatda ("joylashtirilmagan" holatda) saqlanib qoladi.
+    unplaceProject(proj.id);
+  });
+
+  updateProjectTimeInfo(proj);
+}
+
+/**
+ * Loyiha kartasidagi vaqt blokini (boshlangan sana, o'tgan/qolgan vaqt yoki
+ * "tugadi" belgisi) joriy holatga moslab qayta chizadi. Bu real vaqt bilan
+ * bog'liq bo'lgani uchun davriy taymer orqali ham chaqiriladi.
+ *
+ * Matn qancha joy egallashidan qat'iy nazar (uzun sana, katta summa va h.k.),
+ * funksiya oxirida karta balandligi HAQIQIY kontentga moslab qayta o'lchanadi
+ * (fitProjectCardHeight) va nuqta belgilari/ulanish chiziqlari shu yangi
+ * balandlikka moslab qayta chiziladi — shu sababli matn hech qachon karta
+ * tashqarisiga "toshib" chiqmaydi.
+ */
+function updateProjectTimeInfo(proj) {
+  const el = projectEls.get(proj.id);
+  if (!el) return;
+  const timeEl = el.querySelector(".proj-time");
+  if (!timeEl) return;
+
+  if (!proj.startedAt) {
+    timeEl.innerHTML = "";
+  } else {
+    const info = projectProgressInfo(proj);
+    const startedLine = `<div class="proj-time-line proj-time-started">Boshlandi: ${formatDateTime(proj.startedAt)}</div>`;
+
+    if (info.total <= 0) {
+      timeEl.innerHTML = startedLine;
+      el.classList.remove("proj-done", "proj-paused");
+    } else if (info.done) {
+      const realLine = `<div class="proj-time-line proj-time-real">Real ish vaqti: ${formatDurationHours(info.realHours)}</div>`;
+      timeEl.innerHTML =
+        startedLine +
+        realLine +
+        `<div class="proj-time-line proj-time-done">✓ Tugadi</div>` +
+        `<div class="proj-time-line proj-time-cost">Jami xarajat: ${formatMoney(info.workedCost)}</div>`;
+      el.classList.add("proj-done");
+      el.classList.remove("proj-paused");
+    } else {
+      el.classList.remove("proj-done");
+      const elapsedLine = `<div class="proj-time-line">O'tdi (jami, xodimlar soniga ko'paytirilgan): ${formatDurationHours(info.worked)}</div>`;
+      // "Real ish vaqti" — nechta xodim ulanganidan qat'iy nazar, jarayon HAQIQATDA
+      // qancha real (ish jadvali bo'yicha) vaqt davomida faol bo'lganini ko'rsatadi.
+      const realLine = `<div class="proj-time-line proj-time-real">Real ish vaqti: ${formatDurationHours(info.realHours)}</div>`;
+      let statusLine;
+      let costLine;
+      if (info.paused) {
+        statusLine = `<div class="proj-time-line proj-time-paused">⏸ Xodim ulanmagan — vaqt to'xtagan</div>`;
+        costLine = `<div class="proj-time-line proj-time-cost">Xarajat (hozircha): ${formatMoney(info.workedCost)}</div>`;
+        el.classList.add("proj-paused");
+      } else {
+        statusLine = `<div class="proj-time-line">Qoldi: ${formatDurationHours(info.remainingHours)} (tugaydi: ${formatDateTime(info.etaMs)})</div>`;
+        costLine = `<div class="proj-time-line proj-time-cost">Taxminiy xarajat: ~${formatMoney(info.projectedTotalCost)}</div>`;
+        el.classList.remove("proj-paused");
+      }
+      timeEl.innerHTML = startedLine + realLine + elapsedLine + statusLine + costLine;
+    }
+  }
+
+  fitProjectCardHeight(proj);
+  renderProjectMarkers(proj);
+  updateConnectionsForCard(proj.id, "project");
+}
+
+/** Ish maydonidagi barcha joylashtirilgan loyihalarning vaqt ko'rsatkichlarini yangilaydi. */
+function updateAllProjectTimeInfo() {
+  state.projects.forEach((proj) => {
+    if (proj.placed) updateProjectTimeInfo(proj);
+  });
+}
+
+/**
+ * Loyiha kartasidagi ulanish nuqtasi belgilarini (vizual doiralarni) qayta chizadi.
+ * Har bir mavjud ulanish uchun bitta belgi — chap yoki o'ng tomonda, teng taqsimlangan holda.
+ */
+function renderProjectMarkers(proj) {
+  const el = projectEls.get(proj.id);
+  if (!el) return;
+  el.querySelectorAll(".proj-marker").forEach((m) => m.remove());
+
+  const leftConns = projectSideConnections(proj.id, "left");
+  const rightConns = projectSideConnections(proj.id, "right");
+  const h = getProjectCardHeight(proj);
+
+  leftConns.forEach((c, i) => {
+    const y = ((i + 1) / (leftConns.length + 1)) * h;
+    const m = document.createElement("div");
+    m.className = "proj-marker";
+    m.style.left = "-7px";
+    m.style.top = y + "px";
+    el.appendChild(m);
+  });
+  rightConns.forEach((c, i) => {
+    const y = ((i + 1) / (rightConns.length + 1)) * h;
+    const m = document.createElement("div");
+    m.className = "proj-marker";
+    m.style.left = PROJ_W + 7 + "px";
+    m.style.top = y + "px";
+    el.appendChild(m);
+  });
+}
+
+/**
+ * Loyiha kartasining balandligi va nuqta belgilarini joriy ulanishlar soniga moslab
+ * qayta hisoblaydi, so'ng shu loyihaga ulangan chiziqlarni yangilaydi. Bu har safar
+ * bir ulanish qo'shilganda/o'chirilganda chaqiriladi.
+ */
+/**
+ * Faqat balandlik/nuqta belgilari/chiziqlarni yangilaydi — sudrash (drag) paytida
+ * har bir sichqoncha harakatida chaqirish uchun yengil versiya (ro'yxat/vaqt matnini
+ * qayta hisoblamaydi, shuning uchun tez).
+ */
+function refreshProjectConnectionsLayout(projectId) {
+  const proj = state.projects.find((p) => p.id === projectId);
+  if (!proj || !proj.placed) return;
+  const el = projectEls.get(projectId);
+  if (!el) return;
+  fitProjectCardHeight(proj);
+  renderProjectMarkers(proj);
+  updateConnectionsForCard(projectId, "project");
+  // Loyiha ko'chganda ulangan xodimlarning "band" nuqtasi (chap/o'ng) ham
+  // yangi nisbiy joylashuvga qarab yangilanishi kerak.
+  state.connections
+    .filter((c) => c.projectId === projectId)
+    .forEach((c) => updateEmployeeConnPointVisual(c.employeeId));
+}
+
+function refreshProjectLayout(projectId) {
+  const proj = state.projects.find((p) => p.id === projectId);
+  if (!proj) return;
+  updateProjectRosterItemContent(proj);
+  refreshProjectConnectionsLayout(projectId);
+  if (proj.placed) updateProjectTimeInfo(proj);
+}
+
+function updateProjectCardContent(proj) {
+  const el = projectEls.get(proj.id);
+  if (!el) return;
+  el.querySelector(".proj-photo").src = proj.photo || DEFAULT_PROJ_IMG;
+  el.querySelector(".proj-name").textContent = proj.name;
+  el.querySelector(".proj-hours").textContent = projectQtyLabel(proj);
+  updateProjectTimeInfo(proj);
+}
+
+/**
+ * Loyiha to'rtburchagini ish maydonidan olib tashlaydi (ulanishlari bilan birga),
+ * lekin loyihaning o'zini va uning ro'yxatdagi qatorini SAQLAB QOLADI —
+ * u qayta ro'yxatdan sudrab tashlanishi mumkin bo'lib qoladi.
+ */
+function unplaceProject(id) {
+  const proj = state.projects.find((p) => p.id === id);
+  const el = projectEls.get(id);
+  if (el) el.remove();
+  projectEls.delete(id);
+
+  const removed = state.connections.filter((c) => c.projectId === id);
+
+  // Bu loyihaga ulangan xodimlar orasida "ko'p tarmoqli" bo'lganlari bo'lsa, ularning
+  // BOSHQA loyihalaridagi ulushi ham o'zgaradi (ulanishlar soni kamayadi) — shuning
+  // uchun o'sha boshqa loyihalarni eski ulush bilan oldindan qayd etib qo'yamiz.
+  const otherAffectedProjectIds = new Set();
+  removed.forEach((c) => {
+    state.connections
+      .filter((x) => x.employeeId === c.employeeId && x.projectId !== id)
+      .forEach((x) => otherAffectedProjectIds.add(x.projectId));
+  });
+  const commitNow = Date.now();
+  otherAffectedProjectIds.forEach((pid) => {
+    const p = state.projects.find((x) => x.id === pid);
+    if (p) commitProjectProgress(p, commitNow);
+  });
+
+  state.connections = state.connections.filter((c) => c.projectId !== id);
+  removed.forEach((c) => removeConnectionEl(c.id));
+  removed.forEach((c) => updateEmployeeConnPointVisual(c.employeeId));
+  otherAffectedProjectIds.forEach((pid) => refreshProjectLayout(pid));
+
+  if (proj) {
+    proj.placed = false;
+    proj.x = 0;
+    proj.y = 0;
+  }
+
+  updateProjectRosterItemPlacedState(id);
+  updateEmptyHint();
+  saveState();
+}
+
+/* ------------------------------ O'chirish ------------------------------ */
+
+function deleteEmployee(id) {
+  state.employees = state.employees.filter((e) => e.id !== id);
+  const el = employeeEls.get(id);
+  if (el) el.remove();
+  employeeEls.delete(id);
+
+  const rosterEl = rosterEls.get(id);
+  if (rosterEl) rosterEl.remove();
+  rosterEls.delete(id);
+
+  const removed = state.connections.filter((c) => c.employeeId === id);
+  const deleteNow = Date.now();
+  removed.forEach((c) => {
+    const p = state.projects.find((x) => x.id === c.projectId);
+    if (p) commitProjectProgress(p, deleteNow);
+  });
+  state.connections = state.connections.filter((c) => c.employeeId !== id);
+  removed.forEach((c) => removeConnectionEl(c.id));
+  removed.forEach((c) => refreshProjectLayout(c.projectId));
+
+  updateEmptyHint();
+  updateSidebarEmptyState();
+  saveState();
+}
+
+function deleteProject(id) {
+  state.projects = state.projects.filter((p) => p.id !== id);
+  const el = projectEls.get(id);
+  if (el) el.remove();
+  projectEls.delete(id);
+
+  const rosterEl = projRosterEls.get(id);
+  if (rosterEl) rosterEl.remove();
+  projRosterEls.delete(id);
+
+  const removed = state.connections.filter((c) => c.projectId === id);
+
+  // Bu loyihaga ulangan "ko'p tarmoqli" xodimlarning boshqa loyihalardagi ulushi ham
+  // o'zgaradi — o'sha loyihalarni eski ulush bilan oldindan qayd etib qo'yamiz.
+  const otherAffectedProjectIds = new Set();
+  removed.forEach((c) => {
+    state.connections
+      .filter((x) => x.employeeId === c.employeeId && x.projectId !== id)
+      .forEach((x) => otherAffectedProjectIds.add(x.projectId));
+  });
+  const commitNow = Date.now();
+  otherAffectedProjectIds.forEach((pid) => {
+    const p = state.projects.find((x) => x.id === pid);
+    if (p) commitProjectProgress(p, commitNow);
+  });
+
+  state.connections = state.connections.filter((c) => c.projectId !== id);
+  removed.forEach((c) => removeConnectionEl(c.id));
+  removed.forEach((c) => updateEmployeeConnPointVisual(c.employeeId));
+  otherAffectedProjectIds.forEach((pid) => refreshProjectLayout(pid));
+
+  updateEmptyHint();
+  updateProjectSidebarEmptyState();
+  saveState();
+}
+
+/* ------------------------------ Kartani sudrash (drag) ------------------------------ */
+
+function attachCardDrag(el, dataObj, kind) {
+  let dragging = false;
+  let startWorld = null;
+  let startX = 0;
+  let startY = 0;
+
+  el.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest(".conn-point") || e.target.closest(".card-delete")) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    dragging = true;
+    el.classList.add("dragging");
+    startWorld = clientToWorld(e.clientX, e.clientY);
+    startX = dataObj.x;
+    startY = dataObj.y;
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+
+  function onMove(ev) {
+    if (!dragging) return;
+    const w = clientToWorld(ev.clientX, ev.clientY);
+    dataObj.x = Math.round(startX + (w.x - startWorld.x));
+    dataObj.y = Math.round(startY + (w.y - startWorld.y));
+    el.style.left = dataObj.x + "px";
+    el.style.top = dataObj.y + "px";
+
+    if (kind === "employee") {
+      // Xodim qaysi tomonga (loyihaning chapiga yoki o'ngiga) ko'chsa, ulanish shu
+      // tomonga "silliq" o'tib turishi uchun tomonlarni har harakatda qayta hisoblaymiz.
+      // "Ko'p tarmoqli" xodim bir nechta loyihaga ulangan bo'lishi mumkin — barchasi
+      // yangilanadi (faqat birinchisi emas).
+      updateEmployeeConnPointVisual(dataObj.id);
+      const touchedProjectIds = new Set(state.connections.filter((c) => c.employeeId === dataObj.id).map((c) => c.projectId));
+      touchedProjectIds.forEach((pid) => refreshProjectConnectionsLayout(pid));
+    } else {
+      refreshProjectConnectionsLayout(dataObj.id);
+    }
+  }
+
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    el.classList.remove("dragging");
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    saveState();
+  }
+}
+
+/* ------------------------------ Ulanish chizig'ini tortish ------------------------------ */
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Hozir foydalanuvchi yangi ulanish chizig'ini sudrab tortayotgan bo'lsa, shu holatni saqlaydi. */
+let connectingState = null;
+
+function attachConnectionPointHandlers(pointEl) {
+  // Faqat xodim nuqtalarida ishlaydi — ulanish har doim xodimdan boshlanadi
+  // va loyihaning butun kartasiga tekizilganda avtomatik yakunlanadi
+  // (qaysi tomondan tortilsa, loyihaning o'sha tomoniga ulanadi).
+  pointEl.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    startConnecting(pointEl);
+  });
+}
+
+/**
+ * Ikki nuqta orasida silliq bezier chiziq quradi. Har bir nuqtaning "tashqi"
+ * tomoni (chap/o'ng) alohida beriladi, shunda boshqaruv nuqtasi HAR DOIM shu
+ * nuqtaning o'zidan tashqariga (kartadan uzoqlashadigan tomonga) yo'naladi —
+ * bu ikkala nuqta bir-biriga nisbatan qanday joylashganidan qat'iy nazar,
+ * chiziqning karta ichidan "aylanib o'tishi"ning oldini oladi.
+ */
+function bezierPath(x1, y1, side1, x2, y2, side2) {
+  const dx = Math.max(45, Math.abs(x2 - x1) * 0.5);
+  const c1x = side1 === "left" ? x1 - dx : x1 + dx;
+  const c2x = side2 === "left" ? x2 - dx : x2 + dx;
+  return `M ${x1} ${y1} C ${c1x} ${y1}, ${c2x} ${y2}, ${x2} ${y2}`;
+}
+
+function startConnecting(sourcePointEl) {
+  const emp = state.employees.find((x) => x.id === sourcePointEl.dataset.id);
+  if (!emp) return;
+  const off = employeePointOffset(sourcePointEl.dataset.side);
+  const startPos = { x: emp.x + off.offsetX, y: emp.y + off.offsetY };
+
+  connectingState = {
+    sourceId: sourcePointEl.dataset.id,
+    sourceSide: sourcePointEl.dataset.side,
+    startPos,
+    tempPath: null,
+  };
+
+  workspace.classList.add("connecting");
+
+  const tempPath = document.createElementNS(SVG_NS, "path");
+  tempPath.setAttribute("class", "conn-line-temp");
+  svg.appendChild(tempPath);
+  connectingState.tempPath = tempPath;
+  tempPath.setAttribute("d", bezierPath(startPos.x, startPos.y, connectingState.sourceSide, startPos.x, startPos.y, connectingState.sourceSide === "left" ? "right" : "left"));
+
+  window.addEventListener("mousemove", onConnectMove);
+  window.addEventListener("mouseup", onConnectUp);
+}
+
+function hoveredProjectCard(clientX, clientY) {
+  const targetEl = document.elementFromPoint(clientX, clientY);
+  return targetEl ? targetEl.closest(".project-card") : null;
+}
+
+function onConnectMove(ev) {
+  if (!connectingState) return;
+  const worldPos = clientToWorld(ev.clientX, ev.clientY);
+  // Kursor hali biror kartaga "biriktirilmagan" — shuning uchun uning "tashqi"
+  // tomonini manba nuqtasiga nisbatan qaysi tarafda turganiga qarab aniqlaymiz,
+  // shunda tortilayotgan chiziq ham silliq (aylanib ketmaydigan) bo'lib ko'rinadi.
+  const cursorSide = worldPos.x >= connectingState.startPos.x ? "left" : "right";
+  connectingState.tempPath.setAttribute(
+    "d",
+    bezierPath(connectingState.startPos.x, connectingState.startPos.y, connectingState.sourceSide, worldPos.x, worldPos.y, cursorSide)
+  );
+
+  // Kursor ostidagi loyiha kartasini ajratib ko'rsatamiz — shu yerga tashlansa ulanadi.
+  const hovered = hoveredProjectCard(ev.clientX, ev.clientY);
+  document.querySelectorAll(".project-card.drop-hover").forEach((el) => {
+    if (el !== hovered) el.classList.remove("drop-hover");
+  });
+  if (hovered) hovered.classList.add("drop-hover");
+}
+
+function onConnectUp(ev) {
+  window.removeEventListener("mousemove", onConnectMove);
+  window.removeEventListener("mouseup", onConnectUp);
+  if (!connectingState) return;
+
+  workspace.classList.remove("connecting");
+
+  const projCard = hoveredProjectCard(ev.clientX, ev.clientY);
+  if (projCard) {
+    // Qaysi tomondan (chap/o'ng) tortilgan bo'lsa, loyihaning o'sha tomoniga ulanadi.
+    createConnection(connectingState.sourceId, connectingState.sourceSide, projCard.dataset.id, connectingState.sourceSide);
+  }
+
+  if (connectingState.tempPath) connectingState.tempPath.remove();
+  document.querySelectorAll(".project-card.drop-hover").forEach((el) => el.classList.remove("drop-hover"));
+  connectingState = null;
+}
+
+/* ------------------------------ Ulanishlarni boshqarish ------------------------------ */
+
+/** Xodimning (odatda yagona) birinchi ulanishini qaytaradi — ko'p tarmoqli xodimlar
+ * uchun barcha ulanishlarni olish kerak bo'lsa, `state.connections.filter(...)` ishlatiladi. */
+function getEmployeeConnection(employeeId) {
+  return state.connections.find((c) => c.employeeId === employeeId) || null;
+}
+
+function createConnection(employeeId, empSide, projectId, projSide) {
+  const emp = state.employees.find((e) => e.id === employeeId);
+  const existing = state.connections.filter((c) => c.employeeId === employeeId);
+
+  // Oddiy xodim faqat 1 ta ulanishga ega bo'lishi mumkin — eski ulanishi bo'lsa, avval u
+  // olib tashlanadi. "Ko'p tarmoqli" xodim uchun esa faqat SHU loyihaga bo'lgan eski
+  // ulanish almashtiriladi (masalan tomonini o'zgartirsa) — boshqa loyihalardagi
+  // ulanishlari saqlanib qoladi, chunki u bir vaqtda bir nechtasiga ulangan bo'lishi mumkin.
+  const toRemove = emp && emp.multiBranch ? existing.filter((c) => c.projectId === projectId) : existing;
+
+  // Xodimning ulanishlar soni (demak — har bir loyihaga tegadigan ulush) o'zgarishidan
+  // OLDIN, xodimning HOZIRGI barcha loyihalarini (yangisi bilan birga) ESKI ulush bilan
+  // qayd etib qo'yamiz — shunda avvalgi progress to'g'ri hisoblanadi.
+  const affectedProjectIds = new Set(existing.map((c) => c.projectId));
+  affectedProjectIds.add(projectId);
+
+  const commitNow = Date.now();
+  affectedProjectIds.forEach((pid) => {
+    const p = state.projects.find((x) => x.id === pid);
+    if (p) commitProjectProgress(p, commitNow);
+  });
+
+  toRemove.forEach((c) => {
+    state.connections = state.connections.filter((x) => x.id !== c.id);
+    removeConnectionEl(c.id);
+  });
+
+  const conn = { id: genId(), employeeId, empSide, projectId, projSide };
+  state.connections.push(conn);
+  renderConnection(conn);
+
+  updateEmployeeConnPointVisual(employeeId);
+  affectedProjectIds.forEach((pid) => refreshProjectLayout(pid));
+
+  saveState();
+}
+
+function deleteConnection(id) {
+  const conn = state.connections.find((c) => c.id === id);
+  if (!conn) return;
+
+  // Shu xodimning BOSHQA ulanishlariga ham ta'sir qiladi ("ko'p tarmoqli" bo'lsa,
+  // ulanishlar soni kamayishi bilan qolganlarning ulushi oshadi) — shuning uchun
+  // xodimning barcha joriy loyihalarini eski ulush bilan oldindan qayd etamiz.
+  const affectedProjectIds = new Set(
+    state.connections.filter((c) => c.employeeId === conn.employeeId).map((c) => c.projectId)
+  );
+  const commitNow = Date.now();
+  affectedProjectIds.forEach((pid) => {
+    const p = state.projects.find((x) => x.id === pid);
+    if (p) commitProjectProgress(p, commitNow);
+  });
+
+  state.connections = state.connections.filter((c) => c.id !== id);
+  removeConnectionEl(id);
+  updateEmployeeConnPointVisual(conn.employeeId);
+  affectedProjectIds.forEach((pid) => refreshProjectLayout(pid));
+  saveState();
+}
+
+function renderConnection(conn) {
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("class", "conn-line");
+  path.dataset.id = conn.id;
+  path.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteConnection(conn.id);
+  });
+  svg.appendChild(path);
+  connectionEls.set(conn.id, path);
+  updateConnectionPath(conn);
+}
+
+function updateConnectionPath(conn) {
+  const path = connectionEls.get(conn.id);
+  if (!path) return;
+  const emp = state.employees.find((e) => e.id === conn.employeeId);
+  const proj = state.projects.find((p) => p.id === conn.projectId);
+  if (!emp || !proj) return;
+
+  const sides = connSides(conn);
+  const empOff = employeePointOffset(sides.empSide);
+  const projPos = projConnPointWorldPos(conn);
+
+  const x1 = emp.x + empOff.offsetX;
+  const y1 = emp.y + empOff.offsetY;
+  path.setAttribute("d", bezierPath(x1, y1, sides.empSide, projPos.x, projPos.y, sides.projSide));
+}
+
+function updateConnectionsForCard(id, kind) {
+  const relevant = state.connections.filter((c) => (kind === "employee" ? c.employeeId === id : c.projectId === id));
+  relevant.forEach(updateConnectionPath);
+}
+
+function removeConnectionEl(id) {
+  const el = connectionEls.get(id);
+  if (el) el.remove();
+  connectionEls.delete(id);
+}
+
+/* ------------------------------ Pan (surish) ------------------------------ */
+
+let isPanning = false;
+let panStart = { x: 0, y: 0 };
+let panOrigin = { x: 0, y: 0 };
+
+workspace.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  if (e.target.closest(".card") || e.target.closest(".conn-point")) return;
+  isPanning = true;
+  workspace.classList.add("panning");
+  panStart = { x: e.clientX, y: e.clientY };
+  panOrigin = { x: state.view.panX, y: state.view.panY };
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (!isPanning) return;
+  state.view.panX = panOrigin.x + (e.clientX - panStart.x);
+  state.view.panY = panOrigin.y + (e.clientY - panStart.y);
+  applyView();
+});
+
+window.addEventListener("mouseup", () => {
+  if (!isPanning) return;
+  isPanning = false;
+  workspace.classList.remove("panning");
+  saveState();
+});
+
+/* ------------------------------ Zoom (kattalashtirish) ------------------------------ */
+
+workspace.addEventListener(
+  "wheel",
+  (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+    zoomAt(e.clientX, e.clientY, factor);
+  },
+  { passive: false }
+);
+
+function zoomAt(clientX, clientY, factor) {
+  const rect = workspace.getBoundingClientRect();
+  const worldPos = clientToWorld(clientX, clientY);
+  const newZoom = clamp(state.view.zoom * factor, ZOOM_MIN, ZOOM_MAX);
+  state.view.panX = clientX - rect.left - worldPos.x * newZoom;
+  state.view.panY = clientY - rect.top - worldPos.y * newZoom;
+  state.view.zoom = newZoom;
+  applyView();
+  saveState();
+}
+
+function applyView() {
+  world.style.transform = `translate(${state.view.panX}px, ${state.view.panY}px) scale(${state.view.zoom})`;
+  zoomLevelEl.textContent = Math.round(state.view.zoom * 100) + "%";
+}
+
+document.getElementById("btnZoomIn").addEventListener("click", () => {
+  const rect = workspace.getBoundingClientRect();
+  zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, ZOOM_STEP);
+});
+
+document.getElementById("btnZoomOut").addEventListener("click", () => {
+  const rect = workspace.getBoundingClientRect();
+  zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, 1 / ZOOM_STEP);
+});
+
+document.getElementById("btnZoomReset").addEventListener("click", () => {
+  state.view = { panX: 0, panY: 0, zoom: 1 };
+  applyView();
+  saveState();
+});
+
+/* ------------------------------ Eksport (JPG / PDF) ------------------------------ */
+
+/**
+ * Ish maydonidagi BARCHA joylashtirilgan xodim va loyihalarning dunyo koordinatasidagi
+ * chegaralarini hisoblaydi (eksport paytida hech biri "kesilib" qolmasligi uchun).
+ * Hech narsa joylashtirilmagan bo'lsa — null.
+ */
+function computeContentWorldBounds() {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  state.employees.filter((e) => e.placed).forEach((e) => {
+    minX = Math.min(minX, e.x);
+    minY = Math.min(minY, e.y);
+    maxX = Math.max(maxX, e.x + EMP_W);
+    maxY = Math.max(maxY, e.y + EMP_H);
+  });
+  state.projects.filter((p) => p.placed).forEach((p) => {
+    const h = getProjectCardHeight(p);
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x + PROJ_W);
+    maxY = Math.max(maxY, p.y + h);
+  });
+  if (!isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Ko'rinishni (pan/zoom) shunday sozlaydiki, ish maydonidagi BARCHA kartalar bitta
+ * kadrga (hech biri kesilmay) sig'adi — eksportdan oldin chaqiriladi. Muvaffaqiyatli
+ * bo'lsa true, joylashtirilgan kontent umuman yo'q bo'lsa false qaytaradi.
+ */
+function fitViewToContent(padding = 70) {
+  const bounds = computeContentWorldBounds();
+  if (!bounds) return false;
+  const rect = workspace.getBoundingClientRect();
+  const contentW = Math.max(1, bounds.maxX - bounds.minX);
+  const contentH = Math.max(1, bounds.maxY - bounds.minY);
+  const availW = Math.max(50, rect.width - padding * 2);
+  const availH = Math.max(50, rect.height - padding * 2);
+  const zoom = clamp(Math.min(availW / contentW, availH / contentH), ZOOM_MIN, 1);
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  state.view.zoom = zoom;
+  state.view.panX = rect.width / 2 - centerX * zoom;
+  state.view.panY = rect.height / 2 - centerY * zoom;
+  applyView();
+  return true;
+}
+
+/** Fayl nomi uchun "kun.oy.yil soat-daqiqa" ko'rinishidagi vaqt yorlig'ini yasaydi. */
+function exportTimestampLabel() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}_${pad(d.getHours())}-${pad(d.getMinutes())}`;
+}
+
+const exportToastEl = document.getElementById("exportToast");
+function showExportToast(text) {
+  exportToastEl.textContent = text;
+  exportToastEl.classList.remove("hidden");
+}
+function hideExportToast() {
+  exportToastEl.classList.add("hidden");
+}
+
+/** Ish maydonini (barcha kartalar bilan) rasmga (canvas) tushiradi. */
+async function captureWorkspaceCanvas() {
+  if (typeof html2canvas !== "function") {
+    throw new Error("html2canvas kutubxonasi yuklanmadi (internet aloqasini tekshiring)");
+  }
+  const prevView = { ...state.view };
+  const hadContent = fitViewToContent();
+  // Joylashtirilgan hech narsa bo'lmasa ham, hozirgi (bo'sh) ko'rinishni o'zi eksport qilinadi.
+  // Rasm/qalqib chiquvchi elementlar (kontekst menyu va h.k.) tasodifan tushib qolmasligi uchun yopamiz.
+  closeRosterContextMenu();
+  if (!exportMenuEl.classList.contains("hidden")) exportMenuEl.classList.add("hidden");
+  // Layout to'liq barqarorlashishi (kartalar qayta joylashishi) uchun bir necha kadr kutamiz.
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const canvas = await html2canvas(workspace, {
+    backgroundColor: "#0e1015",
+    scale: Math.min(2, window.devicePixelRatio || 1.5),
+    useCORS: true,
+    logging: false,
+  });
+
+  if (hadContent) {
+    state.view = prevView;
+    applyView();
+  }
+  return canvas;
+}
+
+function triggerDownload(dataUrl, filename) {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function exportAsJpg() {
+  showExportToast("Eksport tayyorlanmoqda...");
+  try {
+    const canvas = await captureWorkspaceCanvas();
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
+    triggerDownload(dataUrl, `Metal zavod xodimlari_${exportTimestampLabel()}.jpg`);
+  } catch (err) {
+    console.error(err);
+    alert("Eksport qilishda xatolik yuz berdi: " + err.message);
+  } finally {
+    hideExportToast();
+  }
+}
+
+async function exportAsPdf() {
+  showExportToast("Eksport tayyorlanmoqda...");
+  try {
+    if (!window.jspdf || typeof window.jspdf.jsPDF !== "function") {
+      throw new Error("jsPDF kutubxonasi yuklanmadi (internet aloqasini tekshiring)");
+    }
+    const canvas = await captureWorkspaceCanvas();
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
+    const { jsPDF } = window.jspdf;
+    const orientation = canvas.width >= canvas.height ? "landscape" : "portrait";
+    const pdf = new jsPDF({ orientation, unit: "px", format: [canvas.width, canvas.height] });
+    pdf.addImage(dataUrl, "JPEG", 0, 0, canvas.width, canvas.height);
+    pdf.save(`Metal zavod xodimlari_${exportTimestampLabel()}.pdf`);
+  } catch (err) {
+    console.error(err);
+    alert("Eksport qilishda xatolik yuz berdi: " + err.message);
+  } finally {
+    hideExportToast();
+  }
+}
+
+const btnExportEl = document.getElementById("btnExport");
+const exportMenuEl = document.getElementById("exportMenu");
+
+btnExportEl.addEventListener("click", (e) => {
+  e.stopPropagation();
+  exportMenuEl.classList.toggle("hidden");
+});
+
+exportMenuEl.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-format]");
+  if (!btn) return;
+  exportMenuEl.classList.add("hidden");
+  if (btn.dataset.format === "jpg") exportAsJpg();
+  else if (btn.dataset.format === "pdf") exportAsPdf();
+});
+
+document.addEventListener("mousedown", (e) => {
+  if (!exportMenuEl.classList.contains("hidden") && !e.target.closest(".export-wrap")) {
+    exportMenuEl.classList.add("hidden");
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    document.querySelectorAll(".modal-overlay:not(.hidden)").forEach(closeModal);
+  }
+});
+
+/* ------------------------------ Saqlash / tiklash (localStorage + Firebase) ------------------------------ */
+
+let saveTimeout = null;
+
+function saveState() {
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (err) {
+      console.warn("Ma'lumotlarni saqlashda xatolik:", err);
+    }
+    pushStateToFirebase();
+  }, 150);
+}
+
+/**
+ * Joriy holatni (bulutga) Firebase Realtime Database'ga yuboradi (debounce bilan).
+ * Faqat foydalanuvchi tizimga kirgan (auth) holatda ishlaydi.
+ */
+function pushStateToFirebase() {
+  if (!fbAuth.currentUser) return;
+  clearTimeout(fbPushTimeout);
+  fbPushTimeout = setTimeout(() => {
+    const json = JSON.stringify(state);
+    fbLastSyncedJSON = json;
+    fbDb
+      .ref(FB_STATE_PATH)
+      .set(JSON.parse(json))
+      .catch((err) => console.warn("Bulutga saqlashda xatolik:", err));
+  }, 400);
+}
+
+/**
+ * Holatni tiklaydi. `parsed` berilmasa — brauzerning localStorage'idan o'qiydi
+ * (birinchi tezkor ko'rsatish uchun). `parsed` berilsa (masalan Firebase'dan
+ * kelgan ma'lumot) — to'g'ridan-to'g'ri o'shani ishlatadi.
+ * @param {object|undefined} parsed
+ * @returns {boolean} muvaffaqiyatli tiklandimi
+ */
+function loadState(parsed) {
+  if (parsed === undefined) {
+    let raw;
+    try {
+      raw = localStorage.getItem(STORAGE_KEY);
+    } catch (err) {
+      raw = null;
+    }
+    if (!raw) return false;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      return false;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return false;
+
+  // Eslatma: "placed" maydoni eski (yangilanishdan oldingi) saqlangan ma'lumotlarda
+  // yo'q bo'lishi mumkin — bunday hollarda xodim avvalgidek ish maydonida
+  // ko'rsatilgan deb hisoblanadi (orqaga moslik uchun).
+  state.employees = Array.isArray(parsed.employees)
+    ? parsed.employees.map((e) => ({
+        ...e,
+        x: Number(e.x) || 0,
+        y: Number(e.y) || 0,
+        placed: e.placed !== undefined ? !!e.placed : true,
+        multiBranch: !!e.multiBranch,
+      }))
+    : [];
+  // Eslatma: eski (vaqt kuzatuvi joriy etilishidan oldingi) saqlangan loyihalarda
+  // "qty"/"hoursPerUnit" o'rniga faqat yagona "hours" maydoni bo'lgan — uni
+  // "1 dona × N soat" ko'rinishiga o'tkazamiz (soni=1). Joylashtirilgan (placed)
+  // loyihalarda vaqt kuzatuvi maydonlari yo'q bo'lsa, hisoblagich shu yuklanish
+  // daqiqasidan yangidan boshlanadi (avvalgi tarix noma'lum bo'lgani uchun).
+  const loadNow = Date.now();
+  state.projects = Array.isArray(parsed.projects)
+    ? parsed.projects.map((p) => {
+        const hasNewFields = p.qty !== undefined && p.hoursPerUnit !== undefined;
+        const qty = hasNewFields ? Number(p.qty) || 1 : 1;
+        const hoursPerUnit = hasNewFields ? Number(p.hoursPerUnit) || 0 : Number(p.hours) || 0;
+        const placed = p.placed !== undefined ? !!p.placed : true;
+        const hasTimer = p.startedAt && p.checkpointAt;
+        return {
+          ...p,
+          qty,
+          hoursPerUnit,
+          x: Number(p.x) || 0,
+          y: Number(p.y) || 0,
+          placed,
+          startedAt: hasTimer ? p.startedAt : placed ? loadNow : null,
+          checkpointAt: hasTimer ? p.checkpointAt : placed ? loadNow : null,
+          workedManHours: hasTimer ? Number(p.workedManHours) || 0 : 0,
+          workedCost: hasTimer ? Number(p.workedCost) || 0 : 0,
+          workedRealHours: hasTimer ? Number(p.workedRealHours) || 0 : 0,
+          nightShift: !!p.nightShift,
+        };
+      })
+    : [];
+  // Eski (nuqtalar soni qo'lda belgilanadigan) formatdagi ulanishlarni yangi
+  // formatga ("projSide": "left"/"right") migratsiya qilamiz — shunda oldin
+  // yaratilgan ulanishlar yangilanishdan keyin ham saqlanib qoladi.
+  state.connections = (Array.isArray(parsed.connections) ? parsed.connections : []).map((c) => {
+    if (c.projSide === "left" || c.projSide === "right") {
+      return { id: c.id, employeeId: c.employeeId, empSide: c.empSide, projectId: c.projectId, projSide: c.projSide };
+    }
+    const proj = state.projects.find((p) => p.id === c.projectId);
+    const legacyPoints = proj && Number(proj.points) > 0 ? Number(proj.points) : 4;
+    const leftCount = Math.ceil(legacyPoints / 2);
+    const idx = Number(c.pointIndex) || 0;
+    const projSide = idx < leftCount ? "left" : "right";
+    return { id: c.id, employeeId: c.employeeId, empSide: c.empSide, projectId: c.projectId, projSide };
+  });
+  state.view =
+    parsed.view && typeof parsed.view === "object"
+      ? {
+          panX: Number(parsed.view.panX) || 0,
+          panY: Number(parsed.view.panY) || 0,
+          zoom: clamp(Number(parsed.view.zoom) || 1, ZOOM_MIN, ZOOM_MAX),
+        }
+      : { panX: 0, panY: 0, zoom: 1 };
+  return true;
+}
+
+/* ------------------------------ Ishga tushirish ------------------------------ */
+
+function renderAll() {
+  state.employees.forEach((emp) => {
+    renderRosterItem(emp);
+    if (emp.placed) renderEmployee(emp);
+  });
+  state.projects.forEach((proj) => {
+    renderProjectRosterItem(proj);
+    if (proj.placed) renderProject(proj);
+  });
+  state.connections.forEach(renderConnection);
+  updateEmptyHint();
+  updateSidebarEmptyState();
+  updateProjectSidebarEmptyState();
+  applyView();
+}
+
+/**
+ * Oldin chizilgan barcha kartalar/chiziqlar/ro'yxat qatorlarini tozalab,
+ * `state`dagi joriy ma'lumotlar asosida hammasini qaytadan chizadi.
+ * Bulutdan (boshqa qurilmadan) yangi ma'lumot kelganda ishlatiladi.
+ */
+function resetRenderState() {
+  cardsLayer.innerHTML = "";
+  svg.innerHTML = "";
+  employeeEls.clear();
+  projectEls.clear();
+  connectionEls.clear();
+  sidebarList.querySelectorAll(".roster-item").forEach((el) => el.remove());
+  projectSidebarList.querySelectorAll(".roster-item").forEach((el) => el.remove());
+  rosterEls.clear();
+  projRosterEls.clear();
+  renderAll();
+}
+
+function init() {
+  loadState();
+  renderAll();
+  updateAllProjectTimeInfo();
+  if (!fbTickStarted) {
+    fbTickStarted = true;
+    setInterval(updateAllProjectTimeInfo, WORK_TICK_MS);
+  }
+}
+
+/* ------------------------------ Kirish (Firebase Auth) ------------------------------ */
+
+const authOverlayEl = document.getElementById("authOverlay");
+const authFormEl = document.getElementById("authForm");
+const authErrorEl = document.getElementById("authError");
+const authSubmitEl = document.getElementById("authSubmit");
+const btnLogoutEl = document.getElementById("btnLogout");
+
+function showAuthError(text) {
+  authErrorEl.textContent = text;
+  authErrorEl.classList.remove("hidden");
+}
+
+function hideAuthError() {
+  authErrorEl.classList.add("hidden");
+}
+
+const AUTH_ERROR_MESSAGES = {
+  "auth/invalid-email": "Email manzili noto'g'ri.",
+  "auth/user-disabled": "Bu hisob bloklangan.",
+  "auth/user-not-found": "Bunday hisob topilmadi.",
+  "auth/wrong-password": "Parol noto'g'ri.",
+  "auth/invalid-credential": "Email yoki parol noto'g'ri.",
+  "auth/too-many-requests": "Juda ko'p urinish. Birozdan keyin qayta urinib ko'ring.",
+  "auth/network-request-failed": "Internet aloqasi yo'q yoki uzilgan.",
+};
+
+authFormEl.addEventListener("submit", (e) => {
+  e.preventDefault();
+  hideAuthError();
+  const email = document.getElementById("authEmail").value.trim();
+  const password = document.getElementById("authPassword").value;
+  authSubmitEl.disabled = true;
+  authSubmitEl.textContent = "Kirilmoqda...";
+  fbAuth
+    .signInWithEmailAndPassword(email, password)
+    .catch((err) => {
+      showAuthError(AUTH_ERROR_MESSAGES[err.code] || "Kirishda xatolik yuz berdi: " + err.message);
+    })
+    .finally(() => {
+      authSubmitEl.disabled = false;
+      authSubmitEl.textContent = "Kirish";
+    });
+});
+
+btnLogoutEl.addEventListener("click", () => {
+  fbAuth.signOut();
+});
+
+/**
+ * Firebase'dagi ma'lumotlarni birinchi marta o'qiydi, kerak bo'lsa localStorage'dagi
+ * mavjud ma'lumotni bulutga ko'chiradi, so'ng real-vaqt tinglovchisini yoqadi —
+ * shu tinglovchi tufayli boshqa qurilmada qilingan o'zgarishlar shu qurilmada ham
+ * avtomatik ko'rinadi.
+ */
+function startFirebaseSync() {
+  if (fbListenerAttached) return;
+  fbListenerAttached = true;
+  const stateRef = fbDb.ref(FB_STATE_PATH);
+  stateRef
+    .once("value")
+    .then((snap) => {
+      const remote = snap.val();
+      if (remote) {
+        loadState(remote);
+        fbLastSyncedJSON = JSON.stringify(remote);
+      } else {
+        loadState(); // localStorage'dan (agar bo'lsa) — birinchi marta bulutga ko'chirish uchun
+        pushStateToFirebase();
+      }
+      init();
+
+      stateRef.on("value", (snap2) => {
+        const val = snap2.val();
+        const json = JSON.stringify(val);
+        if (json === fbLastSyncedJSON) return; // bu bizning o'z yozuvimizning aks-sadosi
+        fbLastSyncedJSON = json;
+        if (!val) return;
+        loadState(val);
+        resetRenderState();
+      });
+    })
+    .catch((err) => {
+      console.error("Firebase'dan o'qishda xatolik:", err);
+      showAuthError("Ma'lumotlarni yuklashda xatolik: " + err.message);
+    });
+}
+
+fbAuth.onAuthStateChanged((user) => {
+  if (user) {
+    authOverlayEl.classList.add("hidden");
+    startFirebaseSync();
+  } else {
+    authOverlayEl.classList.remove("hidden");
+  }
+});

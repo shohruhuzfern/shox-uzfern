@@ -1,0 +1,1083 @@
+:root {
+  --bg: #0e1015;
+  --bg-grid-line: rgba(255, 255, 255, 0.055);
+  --bg-grid-dot: rgba(255, 255, 255, 0.09);
+  --panel: #171a22;
+  --panel-2: #1c202b;
+  --card-bg: #1b1f29;
+  --card-border: #2a2f3d;
+  --border: #2a2f3d;
+  --text: #e8eaf0;
+  --text-muted: #8a90a3;
+  --text-muted-clear: #aeb4c8;
+  --accent: #4f8cff;
+  --accent-hover: #6ba0ff;
+  --accent-soft: rgba(79, 140, 255, 0.15);
+  --danger: #ff5566;
+  --danger-hover: #ff7180;
+  --multi-accent: #ffa94d;
+  --multi-accent-soft: rgba(255, 169, 77, 0.15);
+  --radius: 10px;
+  --shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- Toolbar ---------- */
+
+.toolbar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  height: 56px;
+  flex: 0 0 56px;
+  padding: 0 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  z-index: 50;
+}
+
+.toolbar-left { justify-self: start; min-width: 0; }
+
+.toolbar-center {
+  justify-self: center;
+  min-width: 0;
+  text-align: center;
+}
+
+.app-title {
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.2px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toolbar-right {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+  font-family: inherit;
+}
+
+.btn:hover { background: #232838; border-color: #363c4e; }
+.btn:active { transform: translateY(1px); }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0b1220;
+  font-weight: 600;
+}
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.btn-secondary { background: transparent; }
+
+.btn-icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.btn-icon-plus { font-size: 15px; font-weight: 700; }
+
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.zoom-level {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  width: 42px;
+  text-align: center;
+  user-select: none;
+}
+
+.export-wrap {
+  position: relative;
+}
+
+.export-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+  min-width: 170px;
+  z-index: 60;
+}
+
+.export-menu.hidden { display: none; }
+
+.export-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.export-menu button:hover { background: var(--accent-soft); color: var(--accent-hover); }
+
+.export-toast {
+  position: fixed;
+  top: 66px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  padding: 9px 16px;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  z-index: 700;
+  pointer-events: none;
+}
+
+.export-toast.hidden { display: none; }
+
+/* ---------- Kirish (auth) oynasi ---------- */
+
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.auth-overlay.hidden { display: none; }
+
+.auth-box {
+  width: 340px;
+  max-width: calc(100vw - 40px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px 26px;
+  box-shadow: var(--shadow);
+}
+
+.auth-box h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  color: var(--text);
+}
+
+.auth-hint {
+  margin: 0 0 18px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.auth-box form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-box label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.auth-box input {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 9px 10px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.auth-box input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.auth-error {
+  background: rgba(255, 90, 90, 0.12);
+  border: 1px solid rgba(255, 90, 90, 0.4);
+  color: #ff8a8a;
+  font-size: 12.5px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  line-height: 1.4;
+}
+
+.auth-error.hidden { display: none; }
+
+/* ---------- Main layout (sidebar + workspace) ---------- */
+
+.main-layout {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* ---------- Sidebar (xodimlar ro'yxati) ---------- */
+
+.sidebar {
+  flex: 0 0 260px;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.sidebar.sidebar-right {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+.sidebar-header {
+  flex: 0 0 auto;
+  padding: 14px 16px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-header-hint {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.sidebar-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  line-height: 1.5;
+  padding: 18px 16px;
+}
+
+.sidebar-footer {
+  flex: 0 0 auto;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-stats {
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-stat {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-stat span {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.btn-block {
+  width: 100%;
+  justify-content: center;
+}
+
+/* o'ng-tugma kontekst menyusi (tahrirlash / o'chirish) */
+
+.context-menu {
+  position: fixed;
+  z-index: 600;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+  min-width: 160px;
+}
+
+.context-menu.hidden { display: none; }
+
+.context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.context-menu button:hover { background: var(--accent-soft); color: var(--accent-hover); }
+
+.context-menu button[data-action="delete"]:hover {
+  background: rgba(255, 85, 102, 0.15);
+  color: var(--danger);
+}
+
+/* xodim ro'yxat qatori */
+
+.roster-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 8px;
+  cursor: grab;
+  user-select: none;
+}
+
+.roster-item:active { cursor: grabbing; }
+
+.roster-item.placed {
+  cursor: default;
+}
+
+.roster-item.dragging-source { opacity: 0.25; }
+
+.roster-photo {
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex: 0 0 auto;
+  background: #262c3a;
+  border: 1px solid var(--border);
+}
+
+.roster-info { min-width: 0; flex: 1 1 auto; }
+
+.roster-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.roster-position {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.roster-salary {
+  font-size: 11.5px;
+  color: var(--accent-hover);
+  font-weight: 600;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.roster-badge {
+  display: none;
+  font-size: 10px;
+  color: var(--accent-hover);
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.roster-item.placed .roster-badge { display: block; }
+
+.roster-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.roster-item:hover .roster-delete { opacity: 1; }
+.roster-delete:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+.roster-ghost {
+  position: fixed;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card-bg);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  pointer-events: none;
+  opacity: 0.95;
+}
+
+.roster-ghost img {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+/* ---------- Workspace ---------- */
+
+.workspace {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background-color: var(--bg);
+  cursor: grab;
+}
+
+.workspace.drop-target {
+  box-shadow: inset 0 0 0 3px var(--accent);
+}
+
+.workspace.panning { cursor: grabbing; }
+.workspace.connecting { cursor: crosshair; }
+
+.world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.connections-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.connections-layer path {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.cards-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.hint strong { color: #b7bdcc; }
+
+/* ---------- Cards (shared) ---------- */
+
+.card {
+  position: absolute;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  user-select: none;
+  cursor: grab;
+}
+
+.card:active { cursor: grabbing; }
+
+.card.dragging {
+  box-shadow: 0 12px 30px rgba(0,0,0,0.55);
+  border-color: var(--accent);
+  z-index: 20;
+}
+
+.card-delete {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 5;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.card:hover .card-delete { opacity: 1; }
+.card-delete:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+/* connection point */
+
+.conn-point {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 2px solid var(--text-muted);
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: crosshair;
+  z-index: 6;
+  transition: background 0.12s, border-color 0.12s, transform 0.12s;
+}
+
+.conn-point:hover,
+.conn-point.active-hover {
+  border-color: var(--accent);
+  background: var(--accent);
+  transform: translateY(-50%) scale(1.15);
+}
+
+.conn-point.occupied {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ---------- Employee card ---------- */
+
+.employee-card {
+  width: 190px;
+  height: 92px;
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  gap: 10px;
+}
+
+.employee-card .conn-left { left: -7px; }
+.employee-card .conn-right { right: -7px; }
+
+/* Ko'p tarmoqli xodim (bir vaqtda bir nechta loyihaga ulanadigan brigadir/operator) —
+   ranggi va chegarasi bilan ajralib turadi, shuningdek burchakda belgi (badge) chiqadi. */
+.employee-card.multi-branch {
+  border-color: var(--multi-accent);
+  background: linear-gradient(180deg, var(--multi-accent-soft), var(--card-bg) 60%);
+  box-shadow: var(--shadow), 0 0 0 1px var(--multi-accent-soft);
+}
+
+.employee-card.multi-branch::after {
+  content: "⛓ ko'p tarmoqli";
+  position: absolute;
+  top: -9px;
+  left: 10px;
+  background: var(--multi-accent);
+  color: #241300;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 20px;
+  white-space: nowrap;
+  z-index: 4;
+}
+
+.emp-photo {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex: 0 0 auto;
+  background: #262c3a;
+  border: 1px solid var(--border);
+}
+
+.emp-body {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.emp-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.emp-position {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.emp-salary {
+  font-size: 12.5px;
+  color: var(--accent-hover);
+  font-weight: 600;
+  margin-top: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Project card ---------- */
+
+.project-card {
+  width: 300px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  border-style: solid;
+  border-width: 1px;
+  background: linear-gradient(180deg, #1d2230, #191d27);
+}
+
+.project-card .conn-point { background: var(--panel); }
+
+.proj-photo {
+  width: 100%;
+  height: 220px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #262c3a;
+  border: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+.proj-name {
+  font-size: 19px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.proj-hours {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-muted-clear);
+  margin-top: 6px;
+}
+
+.proj-points-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+/* Loyiha kartasidagi ulanish nuqtasi belgilari — faqat vizual, mustaqil ulanish yaratib bo'lmaydi
+   (ulanish har doim xodim tomonidan boshlanadi, loyihaning butun kartasi tushirish nishoni). */
+.proj-marker {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 2px solid var(--accent);
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 6;
+}
+
+.project-card.drop-hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow), 0 0 0 3px var(--accent-soft);
+}
+
+/* ---------- Loyiha vaqt bloki (real vaqtga asoslangan hisoblagich) ---------- */
+
+.proj-time {
+  width: 100%;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.proj-time:empty {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.proj-time-line {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-muted-clear);
+}
+
+.proj-time-started {
+  opacity: 0.9;
+}
+
+.proj-time-real {
+  color: #7fd4ff;
+  font-weight: 600;
+}
+
+.proj-time-done {
+  color: #57d68d;
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.proj-time-cost {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.proj-time-paused {
+  color: #f2b84b;
+  font-weight: 600;
+}
+
+.project-card.proj-done {
+  border-color: #57d68d;
+}
+
+.project-card.proj-paused {
+  border-color: #f2b84b;
+}
+
+/* ---------- Tungi smena tugmasi (loyiha kartasining tepasida) ---------- */
+
+.night-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-muted-clear);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.night-toggle:hover {
+  border-color: var(--accent);
+}
+
+.night-toggle-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.night-toggle-text {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.night-toggle-switch {
+  flex: none;
+  width: 32px;
+  height: 17px;
+  border-radius: 9px;
+  background: #3a4356;
+  position: relative;
+  transition: background 0.15s;
+}
+
+.night-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #aeb4c8;
+  transition: left 0.15s, background 0.15s;
+}
+
+.night-toggle.active {
+  border-color: #7c8cff;
+  background: rgba(124, 140, 255, 0.12);
+  color: #cfd5ff;
+}
+
+.night-toggle.active .night-toggle-switch {
+  background: #7c8cff;
+}
+
+.night-toggle.active .night-toggle-knob {
+  left: 17px;
+  background: #fff;
+}
+
+.project-card.night-active {
+  border-color: #7c8cff;
+}
+
+/* ---------- Connection lines ---------- */
+
+.conn-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.2;
+  opacity: 0.85;
+}
+
+.conn-line:hover {
+  stroke: var(--danger);
+  opacity: 1;
+  stroke-width: 3;
+}
+
+.conn-line-temp {
+  fill: none;
+  stroke: var(--accent-hover);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.conn-line-dot {
+  fill: var(--accent);
+  pointer-events: none;
+}
+
+/* ---------- Modal ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 8, 12, 0.6);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.modal-overlay.hidden { display: none; }
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 22px 24px;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+
+.modal h2 {
+  margin: 0 0 16px;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.modal form {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.modal label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.modal input[type="text"],
+.modal input[type="number"] {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: var(--text);
+  font-size: 13.5px;
+  font-family: inherit;
+  outline: none;
+}
+
+.modal input[type="text"]:focus,
+.modal input[type="number"]:focus {
+  border-color: var(--accent);
+}
+
+.modal input[type="file"] {
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.photo-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+
+.photo-preview img {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  display: none;
+  background: var(--panel-2);
+}
+
+.photo-preview.has-photo img { display: block; }
+.photo-preview.has-photo #empPhotoPlaceholder,
+.photo-preview.has-photo #projPhotoPlaceholder { display: none; }
+
+.photo-preview span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.checkbox-label {
+  flex-direction: row !important;
+  align-items: flex-start;
+  gap: 8px !important;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--multi-accent);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+/* ---------- Scrollbar (webkit) ---------- */
+
+.modal::-webkit-scrollbar { width: 8px; }
+.modal::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }

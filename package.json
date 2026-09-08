@@ -1,0 +1,13 @@
+{
+  "name": "xodimlar-tartibi-automation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Xodimlar Tartibi ilovasi uchun Telegram avtomatlashtirish skriptlari (GitHub Actions orqali ishga tushadi).",
+  "scripts": {
+    "daily-report": "node scripts/send-daily-report.js",
+    "check-completed": "node scripts/check-completed-projects.js"
+  },
+  "dependencies": {
+    "playwright": "^1.47.0"
+  }
+}

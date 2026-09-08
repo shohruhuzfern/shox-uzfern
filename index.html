@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xodimlar Tartibi</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+</head>
+<body>
+
+  <!-- Kirish (login) oynasi — Firebase orqali tasdiqlanmaguncha ilova ko'rinmaydi -->
+  <div id="authOverlay" class="auth-overlay">
+    <div class="auth-box">
+      <h2>Kirish</h2>
+      <p class="auth-hint">Ma'lumotlarga faqat ruxsat berilgan hisob bilan kirish mumkin.</p>
+      <form id="authForm">
+        <label>Email
+          <input type="email" id="authEmail" required autocomplete="username" placeholder="email@masalan.com">
+        </label>
+        <label>Parol
+          <input type="password" id="authPassword" required autocomplete="current-password" placeholder="Parol">
+        </label>
+        <div id="authError" class="auth-error hidden"></div>
+        <button type="submit" class="btn btn-primary btn-block" id="authSubmit">Kirish</button>
+      </form>
+    </div>
+  </div>
+
+  <header class="toolbar">
+    <div class="toolbar-left"></div>
+    <div class="toolbar-center">
+      <span class="app-title">Metall maxsulotlar zavodi xodimlari ish jarayoni nazorati</span>
+    </div>
+    <div class="toolbar-right">
+      <div class="zoom-controls">
+        <button id="btnZoomOut" class="btn btn-icon" title="Kichraytirish">−</button>
+        <span id="zoomLevel" class="zoom-level">100%</span>
+        <button id="btnZoomIn" class="btn btn-icon" title="Kattalashtirish">+</button>
+        <button id="btnZoomReset" class="btn btn-icon" title="Asl holatga qaytarish">⤾</button>
+      </div>
+      <div class="toolbar-divider"></div>
+      <div class="export-wrap">
+        <button id="btnExport" class="btn" title="Rasmga yoki PDFga eksport qilish">⬇ Export</button>
+        <div id="exportMenu" class="export-menu hidden">
+          <button type="button" data-format="jpg">🖼 JPG rasm</button>
+          <button type="button" data-format="pdf">📄 PDF hujjat</button>
+        </div>
+      </div>
+      <div class="toolbar-divider"></div>
+      <button id="btnLogout" class="btn btn-icon" title="Chiqish">⎋</button>
+    </div>
+  </header>
+
+  <div id="exportToast" class="export-toast hidden">Eksport tayyorlanmoqda...</div>
+
+  <div class="main-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        Xodimlar ro'yxati
+        <span class="sidebar-header-hint">(ish maydoniga sudrab tashlang, o'ng tugma — tahrirlash/o'chirish)</span>
+      </div>
+      <div id="sidebarList" class="sidebar-list">
+        <div class="sidebar-empty" id="sidebarEmpty">Hali xodim yo'q.<br>Pastdagi “+ Xodim” tugmasi bilan qo'shing.</div>
+      </div>
+      <div class="sidebar-stats">
+        <div class="sidebar-stat">Xodimlar soni: <span id="statEmployeeTotal">0</span></div>
+        <div class="sidebar-stat">Ishlayotgan xodimlar: <span id="statEmployeeWorking">0</span></div>
+      </div>
+      <div class="sidebar-footer">
+        <button id="btnAddEmployee" class="btn btn-primary btn-block">
+          <span class="btn-icon-plus">+</span> Xodim
+        </button>
+      </div>
+    </aside>
+
+    <main id="workspace" class="workspace">
+      <div id="world" class="world">
+        <svg id="connectionsLayer" class="connections-layer"></svg>
+        <div id="cardsLayer" class="cards-layer"></div>
+      </div>
+      <div class="hint" id="emptyHint">
+        Ro'yxatlardan xodim yoki loyihani ish maydoniga sudrab tashlang
+      </div>
+    </main>
+
+    <aside class="sidebar sidebar-right">
+      <div class="sidebar-header">
+        Loyihalar ro'yxati
+        <span class="sidebar-header-hint">(ish maydoniga sudrab tashlang, o'ng tugma — tahrirlash/o'chirish)</span>
+      </div>
+      <div id="projectSidebarList" class="sidebar-list">
+        <div class="sidebar-empty" id="projectSidebarEmpty">Hali loyiha yo'q.<br>Pastdagi “+ Loyiha” tugmasi bilan qo'shing.</div>
+      </div>
+      <div class="sidebar-stats">
+        <div class="sidebar-stat">Loyihalar soni: <span id="statProjectTotal">0</span></div>
+        <div class="sidebar-stat">Jarayon boshlangan loyihalar: <span id="statProjectStarted">0</span></div>
+      </div>
+      <div class="sidebar-footer">
+        <button id="btnAddProject" class="btn btn-primary btn-block">
+          <span class="btn-icon-plus">+</span> Loyiha
+        </button>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Xodim qo'shish modali -->
+  <div id="employeeModal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2>Yangi xodim</h2>
+      <form id="employeeForm">
+        <label>Ism-familiya
+          <input type="text" id="empName" required placeholder="Masalan: Alisher Karimov">
+        </label>
+
+        <label>Rasm
+          <input type="file" id="empPhoto" accept="image/*">
+        </label>
+        <div class="photo-preview" id="empPhotoPreview">
+          <img id="empPhotoImg" alt="">
+          <span id="empPhotoPlaceholder">Rasm tanlanmagan</span>
+        </div>
+
+        <label>Lavozim
+          <input type="text" id="empPosition" required placeholder="Masalan: Payvandchi">
+        </label>
+
+        <label>Oylik (so'm)
+          <input type="number" id="empSalary" required min="0" step="1" placeholder="Masalan: 4500000">
+        </label>
+
+        <label class="checkbox-label">
+          <input type="checkbox" id="empMultiBranch">
+          Ko'p tarmoqli (bir vaqtning o'zida bir nechta loyihaga ulanishi mumkin — masalan brigadir yoki lazer operatori)
+        </label>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close="employeeModal">Bekor qilish</button>
+          <button type="submit" class="btn btn-primary">OK</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Loyiha qo'shish modali -->
+  <div id="projectModal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2>Yangi loyiha</h2>
+      <form id="projectForm">
+        <label>Loyiha nomi
+          <input type="text" id="projName" required placeholder="Masalan: Metall eshik #12">
+        </label>
+
+        <label>Rasm
+          <input type="file" id="projPhoto" accept="image/*">
+        </label>
+        <div class="photo-preview" id="projPhotoPreview">
+          <img id="projPhotoImg" alt="">
+          <span id="projPhotoPlaceholder">Rasm tanlanmagan</span>
+        </div>
+
+        <label>Soni (dona)
+          <input type="number" id="projQty" required min="1" step="1" placeholder="Masalan: 10">
+        </label>
+
+        <label>1 donaga ketadigan vaqt (soat)
+          <input type="number" id="projHoursPerUnit" required min="0.1" step="0.1" placeholder="Masalan: 1">
+        </label>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close="projectModal">Bekor qilish</button>
+          <button type="submit" class="btn btn-primary">OK</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
