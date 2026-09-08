@@ -2332,9 +2332,16 @@ function startFirebaseSync() {
       if (remote) {
         loadState(remote);
         fbLastSyncedJSON = JSON.stringify(remote);
-      } else {
-        loadState(); // localStorage'dan (agar bo'lsa) — birinchi marta bulutga ko'chirish uchun
-        pushStateToFirebase();
+          } else {
+        // Bulutda hali hech narsa yo'q. localStorage'dan o'qiymiz, lekin FAQAT
+        // unda haqiqatan ham xodim yoki loyiha bo'lsa, bulutga yuboramiz —
+        // aks holda (masalan tarmoq nosozligi tufayli "remote" noto'g'ri bo'sh
+        // ko'ringan holatda) bo'sh holatni bulutga yozib, mavjud ma'lumotni
+        // o'chirib yuborish xavfining oldini olamiz.
+        const hadLocal = loadState();
+        if (hadLocal && (state.employees.length > 0 || state.projects.length > 0)) {
+          pushStateToFirebase();
+        }
       }
       init();
 
