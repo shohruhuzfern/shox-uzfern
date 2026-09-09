@@ -1480,6 +1480,49 @@ function finishProjectNow(id) {
   updateProjectTimeInfo(proj);
   renderProjectEmployeeTables();
   saveState();
+  // Server tekshiruvini (15 daqiqa) kutmasdan, "Qilingan ishlar" ro'yxatiga darhol
+  // qo'shamiz — botga xabar yuborish esa (kechikishi mumkin bo'lgani uchun) avvalgidek
+  // faqat serverdagi 15 daqiqalik tekshiruvga qoldiriladi.
+  pushCompletedWorkEntry(proj, now);
+}
+
+/**
+ * Loyihani "Qilingan ishlar" ro'yxatiga (Firebase "completedWorks") darhol yozadi —
+ * "Tugatish" tugmasi bosilganda chaqiriladi, server tekshiruvini kutmaydi.
+ * "completedWorksLogged/<id>" bayrog'i orqali, keyinroq server tekshiruvi (15 daqiqada
+ * bir) xuddi shu loyiha uchun ikkinchi marta (dublikat) yozuv qo'shib qo'ymasligi
+ * ta'minlanadi. Loyiha keyinchalik qayta ish maydoniga tashlab, qaytadan tugatilsa,
+ * server tekshiruvi bu bayroqni o'zi tozalab, keyingi tugashda qayta yozadi.
+ */
+function pushCompletedWorkEntry(proj, finishedAt) {
+  if (!fbAuth.currentUser) return;
+  const loggedRef = fbDb.ref("completedWorksLogged/" + proj.id);
+  loggedRef
+    .once("value")
+    .then((snap) => {
+      if (snap.val()) return;
+      const info = projectProgressInfo(proj, finishedAt);
+      const rows = projectLedgerRows(proj, finishedAt).map((r) => ({
+        name: r.name,
+        connected: !!r.connected,
+        hoursText: formatDurationHours(r.realHours),
+        costText: formatMoney(r.cost),
+      }));
+      return fbDb
+        .ref("completedWorks")
+        .push({
+          id: proj.id,
+          name: proj.name,
+          startedAt: proj.startedAt || null,
+          finishedAt,
+          allocatedText: formatHours(projectTotalManHours(proj)),
+          realHoursText: formatDurationHours(info.realHours),
+          totalCostText: formatMoney(info.workedCost),
+          rows,
+        })
+        .then(() => loggedRef.set(true));
+    })
+    .catch((err) => console.warn("Qilingan ishlar ro'yxatiga yozishda xatolik:", err));
 }
 
 /**
@@ -2891,6 +2934,10 @@ function renderCompletedWorks(items) {
             .join("")
         : `<tr><td colspan="3" class="ptbl-empty-row">Xodim ulanmagan edi</td></tr>`;
       const when = it.finishedAt ? formatDateTime(it.finishedAt) : "";
+      const started = it.startedAt ? formatDateTime(it.startedAt) : "-";
+      // Eski (bu tuzatishdan oldingi) yozuvlarda "realHoursText" bo'lmasligi mumkin —
+      // shunday holda "-" ko'rsatiladi.
+      const realHoursText = it.realHoursText || "-";
       return `
         <div class="ptbl completed-work-card">
           <div class="ptbl-header">
@@ -2898,7 +2945,11 @@ function renderCompletedWorks(items) {
             <span class="completed-work-date">${escapeHtml(when)}</span>
           </div>
           <div class="ptbl-body">
-            <div class="ptbl-allocated">Ajratilgan vaqt: ${escapeHtml(it.allocatedText || "-")} · Jami xarajat: ${escapeHtml(it.totalCostText || "-")}</div>
+            <div class="ptbl-allocated">
+              Boshlandi: ${escapeHtml(started)}<br>
+              Ajratilgan vaqt: ${escapeHtml(it.allocatedText || "-")} · Real ish vaqti: ${escapeHtml(realHoursText)}<br>
+              Jami xarajat: ${escapeHtml(it.totalCostText || "-")}
+            </div>
             <table class="ptbl-table">
               <thead><tr><th>Xodim</th><th>Vaqt</th><th>Summasi</th></tr></thead>
               <tbody>${rowsHtml}</tbody>
