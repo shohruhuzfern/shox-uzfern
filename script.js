@@ -32,12 +32,20 @@ let fbPushTimeout = null;
 let fbListenerAttached = false;
 let fbTickStarted = false;
 
-const EMP_W = 190;
-const EMP_H = 92;
+// Karta o'lchamlarining bazaviy (100%) qiymatlari — Sozlamalar panelidagi
+// "karta o'lchami" surgichlari shu bazaviy qiymatlarga nisbatan % qo'llaydi.
+// EMP_W/EMP_H/PROJ_W har doim shu bazaviy qiymat * tanlangan foiz bo'ladi va
+// applySizeSettings() orqali qayta hisoblanadi — shuning uchun ular `let`.
+const EMP_W_BASE = 190;
+const EMP_H_BASE = 92;
+const PROJ_W_BASE = 360;
+
+let EMP_W = EMP_W_BASE;
+let EMP_H = EMP_H_BASE;
 
 // Loyiha kartasi xodim kartasidan sezilarli darajada (~4 barobar maydon bo'yicha) katta:
 // rasm ham ancha kattaroq ko'rinadi.
-const PROJ_W = 360;
+let PROJ_W = PROJ_W_BASE;
 const PROJ_ROW_H = 26;
 const PROJ_TOP_PAD = 20;
 const PROJ_PHOTO_H = 220;
@@ -76,12 +84,21 @@ const MONTHLY_WORK_HOURS = 26 * 8;
 
 /* ------------------------------- Holat --------------------------------- */
 
-/** @type {{employees: object[], projects: object[], connections: object[], view: {panX:number, panY:number, zoom:number}}} */
+// Sozlamalar panelidagi qiymatlarning standart (birinchi marta ochilgandagi) holati.
+const DEFAULT_SETTINGS = {
+  empScale: 100, // xodim kartasi o'lchami, % (bazaviyga nisbatan)
+  projScale: 100, // loyiha kartasi o'lchami, %
+  connColor: "#4f8cff", // ulanish chizig'i rangi
+  connWidth: 2.2, // ulanish chizig'i qalinligi, px
+};
+
+/** @type {{employees: object[], projects: object[], connections: object[], view: {panX:number, panY:number, zoom:number}, settings: object}} */
 let state = {
   employees: [],
   projects: [],
   connections: [],
   view: { panX: 0, panY: 0, zoom: 1 },
+  settings: { ...DEFAULT_SETTINGS },
 };
 
 // DOM elementlarga tezkor murojaat uchun xaritalar
@@ -1039,6 +1056,8 @@ function renderEmployee(emp) {
   el.dataset.id = emp.id;
   el.style.left = emp.x + "px";
   el.style.top = emp.y + "px";
+  el.style.width = EMP_W + "px";
+  el.style.height = EMP_H + "px";
 
   el.innerHTML = `
     <button class="card-delete" title="O'chirish" data-role="delete">×</button>
@@ -2137,6 +2156,152 @@ document.getElementById("btnZoomReset").addEventListener("click", () => {
   saveState();
 });
 
+/* ------------------------------ Yon panellarni ixchamlash (faqat rasm) ------------------------------ */
+
+/**
+ * Chap (xodimlar) va o'ng (loyihalar) panellarni "faqat rasm" ko'rinishiga
+ * o'tkazadi — panel torayadi, matnlar yashiriladi, faqat rasmlar qatori qoladi.
+ * Bu ish maydoniga ko'proq joy bo'shatadi. Tanlov shu brauzerda (localStorage'da)
+ * eslab qolinadi.
+ */
+const COMPACT_KEY_EMP = "xodimlarTartibi_compactEmp";
+const COMPACT_KEY_PROJ = "xodimlarTartibi_compactProj";
+
+const employeeSidebarEl = document.getElementById("employeeSidebar");
+const projectSidebarEl = document.getElementById("projectSidebar");
+const btnCompactEmpEl = document.getElementById("btnCompactEmp");
+const btnCompactProjEl = document.getElementById("btnCompactProj");
+
+function applyCompactSidebar(sidebarEl, btnEl, on, expandIcon, collapseIcon) {
+  sidebarEl.classList.toggle("compact", on);
+  btnEl.classList.toggle("active", on);
+  btnEl.textContent = on ? expandIcon : collapseIcon;
+  btnEl.title = on ? "To'liq ko'rinish" : "Faqat rasm (ixcham)";
+}
+
+function toggleCompactSidebar(sidebarEl, btnEl, storageKey, expandIcon, collapseIcon) {
+  const on = !sidebarEl.classList.contains("compact");
+  applyCompactSidebar(sidebarEl, btnEl, on, expandIcon, collapseIcon);
+  try {
+    localStorage.setItem(storageKey, on ? "1" : "0");
+  } catch (err) {
+    /* localStorage mavjud bo'lmasa — e'tiborsiz qoldiramiz */
+  }
+}
+
+btnCompactEmpEl.addEventListener("click", () =>
+  toggleCompactSidebar(employeeSidebarEl, btnCompactEmpEl, COMPACT_KEY_EMP, "⇥", "⇤")
+);
+btnCompactProjEl.addEventListener("click", () =>
+  toggleCompactSidebar(projectSidebarEl, btnCompactProjEl, COMPACT_KEY_PROJ, "⇤", "⇥")
+);
+
+(function initCompactSidebars() {
+  let empOn = false;
+  let projOn = false;
+  try {
+    empOn = localStorage.getItem(COMPACT_KEY_EMP) === "1";
+    projOn = localStorage.getItem(COMPACT_KEY_PROJ) === "1";
+  } catch (err) {
+    /* e'tiborsiz */
+  }
+  applyCompactSidebar(employeeSidebarEl, btnCompactEmpEl, empOn, "⇥", "⇤");
+  applyCompactSidebar(projectSidebarEl, btnCompactProjEl, projOn, "⇤", "⇥");
+})();
+
+/* ------------------------------ Sozlamalar (karta o'lchami, chiziq ko'rinishi) ------------------------------ */
+
+/**
+ * `state.settings.empScale`/`projScale` (foizda, masalan 100 = bazaviy o'lcham)
+ * asosida haqiqiy EMP_W/EMP_H/PROJ_W piksel qiymatlarini qayta hisoblaydi.
+ * Bu qiymatlar nafaqat vizual (CSS) o'lchamni, balki ulanish nuqtalari va
+ * chiziqlarning joylashuv matematikasini ham belgilaydi — shu sababli
+ * o'zgargandan keyin BUTUN ish maydonini qayta chizish shart (resetRenderState).
+ */
+function applySizeSettings() {
+  const s = state.settings || DEFAULT_SETTINGS;
+  const empScale = clamp(Number(s.empScale) || 100, 60, 160) / 100;
+  const projScale = clamp(Number(s.projScale) || 100, 60, 160) / 100;
+  EMP_W = Math.round(EMP_W_BASE * empScale);
+  EMP_H = Math.round(EMP_H_BASE * empScale);
+  PROJ_W = Math.round(PROJ_W_BASE * projScale);
+}
+
+/** Ulanish chizig'ining rangi/qalinligini CSS custom property orqali (butun sahifa uchun) qo'llaydi. */
+function applyConnStyleSettings() {
+  const s = state.settings || DEFAULT_SETTINGS;
+  const color = /^#[0-9a-fA-F]{6}$/.test(s.connColor) ? s.connColor : DEFAULT_SETTINGS.connColor;
+  const width = clamp(Number(s.connWidth) || DEFAULT_SETTINGS.connWidth, 1, 6);
+  document.documentElement.style.setProperty("--conn-color", color);
+  document.documentElement.style.setProperty("--conn-width", String(width));
+}
+
+/** Sozlamalar oynasidagi input'larni joriy `state.settings`ga moslab ko'rsatadi. */
+function syncSettingsFormFromState() {
+  const s = { ...DEFAULT_SETTINGS, ...state.settings };
+  settingsEmpScaleEl.value = s.empScale;
+  settingsEmpScaleValEl.textContent = s.empScale + "%";
+  settingsProjScaleEl.value = s.projScale;
+  settingsProjScaleValEl.textContent = s.projScale + "%";
+  settingsConnColorEl.value = s.connColor;
+  settingsConnWidthEl.value = s.connWidth;
+  settingsConnWidthValEl.textContent = s.connWidth + "px";
+}
+
+const btnSettingsEl = document.getElementById("btnSettings");
+const settingsModalEl = document.getElementById("settingsModal");
+const settingsEmpScaleEl = document.getElementById("settingsEmpScale");
+const settingsEmpScaleValEl = document.getElementById("settingsEmpScaleVal");
+const settingsProjScaleEl = document.getElementById("settingsProjScale");
+const settingsProjScaleValEl = document.getElementById("settingsProjScaleVal");
+const settingsConnColorEl = document.getElementById("settingsConnColor");
+const settingsConnWidthEl = document.getElementById("settingsConnWidth");
+const settingsConnWidthValEl = document.getElementById("settingsConnWidthVal");
+const settingsResetBtnEl = document.getElementById("settingsResetBtn");
+
+btnSettingsEl.addEventListener("click", () => {
+  syncSettingsFormFromState();
+  openModal(settingsModalEl);
+});
+
+settingsEmpScaleEl.addEventListener("input", () => {
+  state.settings.empScale = Number(settingsEmpScaleEl.value);
+  settingsEmpScaleValEl.textContent = state.settings.empScale + "%";
+  applySizeSettings();
+  resetRenderState();
+  saveState();
+});
+
+settingsProjScaleEl.addEventListener("input", () => {
+  state.settings.projScale = Number(settingsProjScaleEl.value);
+  settingsProjScaleValEl.textContent = state.settings.projScale + "%";
+  applySizeSettings();
+  resetRenderState();
+  saveState();
+});
+
+settingsConnColorEl.addEventListener("input", () => {
+  state.settings.connColor = settingsConnColorEl.value;
+  applyConnStyleSettings();
+  saveState();
+});
+
+settingsConnWidthEl.addEventListener("input", () => {
+  state.settings.connWidth = Number(settingsConnWidthEl.value);
+  settingsConnWidthValEl.textContent = state.settings.connWidth + "px";
+  applyConnStyleSettings();
+  saveState();
+});
+
+settingsResetBtnEl.addEventListener("click", () => {
+  state.settings = { ...DEFAULT_SETTINGS };
+  syncSettingsFormFromState();
+  applySizeSettings();
+  applyConnStyleSettings();
+  resetRenderState();
+  saveState();
+});
+
 /* ------------------------------ Eksport (JPG / PDF) ------------------------------ */
 
 /**
@@ -2164,6 +2329,31 @@ function computeContentWorldBounds(extraBottomYs) {
     minY = Math.min(minY, p.y);
     maxX = Math.max(maxX, p.x + PROJ_W);
     maxY = Math.max(maxY, p.y + h);
+  });
+  // Ulanish chizig'ining bezier boshqaruv nuqtasi ikkala kartadan TASHQARIGA
+  // (ulanish tomoni yo'nalishida) chiqib ketishi mumkin — bu nuqtalar ham
+  // chegaraga kiritilmasa, uzoq masofadagi kartalarni bog'laydigan chiziqning
+  // "bo'rtib chiqqan" qismi eksportda kesilib qolishi mumkin.
+  state.connections.forEach((conn) => {
+    const emp = state.employees.find((e) => e.id === conn.employeeId);
+    const proj = state.projects.find((p) => p.id === conn.projectId);
+    if (!emp || !proj) return;
+    const sides = connSides(conn);
+    const empOff = employeePointOffset(sides.empSide);
+    const projPos = projConnPointWorldPos(conn);
+    const x1 = emp.x + empOff.offsetX;
+    const y1 = emp.y + empOff.offsetY;
+    const dx = Math.max(45, Math.abs(projPos.x - x1) * 0.5);
+    const c1x = sides.empSide === "left" ? x1 - dx : x1 + dx;
+    const c2x = sides.projSide === "left" ? projPos.x - dx : projPos.x + dx;
+    [c1x, x1, projPos.x, c2x].forEach((x) => {
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+    });
+    [y1, projPos.y].forEach((y) => {
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    });
   });
   if (Array.isArray(extraBottomYs)) {
     extraBottomYs.forEach((y) => {
@@ -2230,6 +2420,20 @@ function hideExportToast() {
 function createExportProjectTables() {
   const now = Date.now();
   const created = [];
+  // Jadval "shtamp" kabi kartaning pastki burchagiga biroz ustma-ust tushib
+  // biriktiriladi — shuning uchun kartadan torroq va yuqoriga bir oz siljitilgan.
+  const TABLE_W = 260;
+  const OVERLAP = 16;
+
+  const rectsOverlap = (a, b) => a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2 && a.y2 > b.y1;
+
+  // Boshqa kartalar (xodimlar va qolgan loyihalar) — jadval ular ustiga tushib
+  // qolmasligi uchun to'qnashuv tekshiruvida ishlatiladi.
+  const baseObstacles = [];
+  state.employees
+    .filter((e) => e.placed)
+    .forEach((e) => baseObstacles.push({ x1: e.x, y1: e.y, x2: e.x + EMP_W, y2: e.y + EMP_H }));
+
   state.projects
     .filter((p) => p.placed && !projectProgressInfo(p, now).done)
     .forEach((proj) => {
@@ -2248,12 +2452,14 @@ function createExportProjectTables() {
         : `<tr><td colspan="3" class="ptbl-empty-row">Hali xodim ulanmagan</td></tr>`;
 
       const cardHeight = getProjectCardHeight(proj);
-      const top = proj.y + cardHeight + 14;
+      const top = proj.y + cardHeight - OVERLAP;
+
       const el = document.createElement("div");
       el.className = "ptbl ptbl-export";
-      el.style.left = proj.x + "px";
+      el.style.width = TABLE_W + "px";
       el.style.top = top + "px";
-      el.style.width = PROJ_W + "px";
+      // Avval chap variantda joylashtiramiz — haqiqiy balandligini o'lchash uchun.
+      el.style.left = proj.x + "px";
       el.innerHTML = `
         <div class="ptbl-header">
           <span class="ptbl-name">${escapeHtml(proj.name)}</span>
@@ -2266,7 +2472,32 @@ function createExportProjectTables() {
           </table>
         </div>`;
       cardsLayer.appendChild(el);
-      created.push({ el, bottom: top + el.offsetHeight });
+      const tableH = el.offsetHeight;
+
+      // Chap-past va o'ng-past burchak variantlaridan qaysi biri boshqa kartalar
+      // bilan kamroq to'qnashsa — o'shani tanlaymiz ("bo'sh joyga qarab avtomatik").
+      const leftRect = { x1: proj.x, y1: top, x2: proj.x + TABLE_W, y2: top + tableH };
+      const rightX = proj.x + PROJ_W - TABLE_W;
+      const rightRect = { x1: rightX, y1: top, x2: rightX + TABLE_W, y2: top + tableH };
+
+      const obstacles = baseObstacles.concat(
+        state.projects
+          .filter((p) => p.placed && p.id !== proj.id)
+          .map((p) => ({ x1: p.x, y1: p.y, x2: p.x + PROJ_W, y2: p.y + getProjectCardHeight(p) })),
+        created.map((c) => c.rect)
+      );
+
+      const leftHits = obstacles.filter((o) => rectsOverlap(leftRect, o)).length;
+      const rightHits = obstacles.filter((o) => rectsOverlap(rightRect, o)).length;
+
+      let rect = leftRect;
+      if (rightHits < leftHits) {
+        rect = rightRect;
+        el.style.left = rightX + "px";
+        el.classList.add("ptbl-export-right");
+      }
+
+      created.push({ el, bottom: rect.y2, rect });
     });
   return created;
 }
@@ -2289,16 +2520,60 @@ async function captureWorkspaceCanvas() {
   const extraBottoms = exportTables.map((t) => t.bottom);
 
   const hadContent = fitViewToContent(70, extraBottoms);
+
+  // --- Ulanish chiziqlari (SVG qatlami) eksportda ko'rinishi uchun ---
+  // html2canvas SVG elementini oddiy DOM kabi emas, ALOHIDA rasm sifatida
+  // serializatsiya qilib, uning o'z o'lchamida rasterlaydi. Agar bu o'lcham
+  // juda katta bo'lsa (bizdagi 30000x30000 qatlam kabi), brauzerning canvas
+  // hajm chegarasidan oshib ketadi va natijada BUTUNLAY BO'SH (shaffof) rasm
+  // qaytadi — aynan shu sababli chiziqlar eksportda umuman ko'rinmayotgan edi.
+  // Yechim: eksport paytida SVG'ni faqat haqiqiy kontent maydoniga mos
+  // (kichik, xavfsiz) o'lchamga keltiramiz. `viewBox` esa ichkaridagi
+  // koordinatalar avvalgidek dunyo koordinatasida qolishini ta'minlaydi.
+  const svgBounds = computeContentWorldBounds(extraBottoms);
+  let svgResized = false;
+  if (svgBounds) {
+    // Bezier boshqaruv nuqtalari endi computeContentWorldBounds ichida aniq
+    // hisoblab chegaraga qo'shilgan — shuning uchun bu yerda faqat chiziq
+    // qalinligi/yumaloqlanish xatoligi uchun kichik zaxira yetarli.
+    const pad = 40;
+    const vbX = Math.floor(svgBounds.minX - pad);
+    const vbY = Math.floor(svgBounds.minY - pad);
+    const vbW = Math.max(1, Math.ceil(svgBounds.maxX - svgBounds.minX + pad * 2));
+    const vbH = Math.max(1, Math.ceil(svgBounds.maxY - svgBounds.minY + pad * 2));
+    svg.setAttribute("viewBox", `${vbX} ${vbY} ${vbW} ${vbH}`);
+    svg.setAttribute("width", String(vbW));
+    svg.setAttribute("height", String(vbH));
+    svg.style.left = vbX + "px";
+    svg.style.top = vbY + "px";
+    svg.style.width = vbW + "px";
+    svg.style.height = vbH + "px";
+    svgResized = true;
+  }
+
   // Layout to'liq barqarorlashishi (kartalar qayta joylashishi) uchun bir necha kadr kutamiz.
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  await new Promise((resolve) => setTimeout(resolve, 80));
 
   const canvas = await html2canvas(workspace, {
     backgroundColor: "#0e1015",
-    scale: Math.min(2, window.devicePixelRatio || 1.5),
+    // Matn aniq (o'qib bo'ladigan darajada) chiqishi uchun har doim yuqori
+    // aniqlikda rasterlaymiz — qurilmaning o'z devicePixelRatio'siga bog'liq emas.
+    scale: 3,
     useCORS: true,
     logging: false,
   });
+
+  // SVG qatlamini asl holatiga qaytaramiz.
+  if (svgResized) {
+    svg.removeAttribute("viewBox");
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+    svg.style.left = "";
+    svg.style.top = "";
+    svg.style.width = "";
+    svg.style.height = "";
+  }
 
   exportTables.forEach((t) => t.el.remove());
   projectTablesPanelEl.style.display = prevPanelDisplay;
@@ -2519,6 +2794,12 @@ function loadState(parsed) {
           zoom: clamp(Number(parsed.view.zoom) || 1, ZOOM_MIN, ZOOM_MAX),
         }
       : { panX: 0, panY: 0, zoom: 1 };
+  // Sozlamalar (karta o'lchami, chiziq rangi/qalinligi) — eski saqlangan
+  // ma'lumotlarda bo'lmasligi mumkin, shuning uchun standart qiymatlar bilan
+  // to'ldirib olamiz.
+  state.settings = { ...DEFAULT_SETTINGS, ...(parsed.settings && typeof parsed.settings === "object" ? parsed.settings : {}) };
+  applySizeSettings();
+  applyConnStyleSettings();
   return true;
 }
 
@@ -2568,6 +2849,80 @@ function init() {
     setInterval(updateAllProjectTimeInfo, WORK_TICK_MS);
   }
 }
+
+/* ------------------------------ Qilingan ishlar (haftalik tugatilgan loyihalar) ------------------------------ */
+
+/**
+ * Firebase'ning "completedWorks" tuguni — har bir loyiha tabiiy yoki qo'lda
+ * ("Tugatish" tugmasi bilan) tugaganda check-completed-projects.js (15 daqiqada
+ * bir ishga tushadigan server skripti) tomonidan shu yerga yozuv qo'shiladi.
+ * Har shanba kuni soat 19:00'da send-weekly-report.js shu ro'yxatni botga
+ * hisobot qilib yuboradi va BUTUNLAY tozalaydi — shuning uchun bu yerda doim
+ * faqat "joriy hafta"ga tegishli yozuvlar bo'ladi.
+ */
+const btnCompletedWorksEl = document.getElementById("btnCompletedWorks");
+const completedWorksModalEl = document.getElementById("completedWorksModal");
+const completedWorksListEl = document.getElementById("completedWorksList");
+const completedWorksCountEl = document.getElementById("completedWorksCount");
+
+function renderCompletedWorks(items) {
+  completedWorksCountEl.textContent = String(items.length);
+  completedWorksCountEl.classList.toggle("hidden", items.length === 0);
+
+  if (items.length === 0) {
+    completedWorksListEl.innerHTML = `<div class="sidebar-empty">Bu hafta hali tugagan loyiha yo'q.</div>`;
+    return;
+  }
+
+  const sorted = items.slice().sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0));
+  completedWorksListEl.innerHTML = sorted
+    .map((it) => {
+      const rows = Array.isArray(it.rows) ? it.rows : [];
+      const rowsHtml = rows.length
+        ? rows
+            .map(
+              (r) => `
+          <tr class="${r.connected ? "" : "ptbl-row-disconnected"}">
+            <td class="ptbl-td-name">${escapeHtml(r.name || "")}${r.connected ? "" : ' <span class="ptbl-tag">uzilgan</span>'}</td>
+            <td class="ptbl-td-time">${escapeHtml(r.hoursText || "")}</td>
+            <td class="ptbl-td-cost">${escapeHtml(r.costText || "")}</td>
+          </tr>`
+            )
+            .join("")
+        : `<tr><td colspan="3" class="ptbl-empty-row">Xodim ulanmagan edi</td></tr>`;
+      const when = it.finishedAt ? formatDateTime(it.finishedAt) : "";
+      return `
+        <div class="ptbl completed-work-card">
+          <div class="ptbl-header">
+            <span class="ptbl-name">${escapeHtml(it.name || "")}</span>
+            <span class="completed-work-date">${escapeHtml(when)}</span>
+          </div>
+          <div class="ptbl-body">
+            <div class="ptbl-allocated">Ajratilgan vaqt: ${escapeHtml(it.allocatedText || "-")} · Jami xarajat: ${escapeHtml(it.totalCostText || "-")}</div>
+            <table class="ptbl-table">
+              <thead><tr><th>Xodim</th><th>Vaqt</th><th>Summasi</th></tr></thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
+/** Firebase'dagi "completedWorks" tuguniga jonli (real-time) tinglovchi ulaydi. */
+let completedWorksListenerAttached = false;
+function startCompletedWorksSync() {
+  if (completedWorksListenerAttached) return;
+  completedWorksListenerAttached = true;
+  fbDb.ref("completedWorks").on("value", (snap) => {
+    const val = snap.val() || {};
+    renderCompletedWorks(Object.values(val));
+  });
+}
+
+btnCompletedWorksEl.addEventListener("click", () => {
+  openModal(completedWorksModalEl);
+});
 
 /* ------------------------------ Kirish (Firebase Auth) ------------------------------ */
 
@@ -2668,6 +3023,7 @@ fbAuth.onAuthStateChanged((user) => {
   if (user) {
     authOverlayEl.classList.add("hidden");
     startFirebaseSync();
+    startCompletedWorksSync();
   } else {
     authOverlayEl.classList.remove("hidden");
   }
