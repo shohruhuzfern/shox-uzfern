@@ -832,8 +832,8 @@ body {
 }
 
 .proj-name {
-  font-size: 19px;
-  font-weight: 700;
+  font-size: 23px;
+  font-weight: 800;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -900,6 +900,24 @@ body {
 .proj-time-real {
   color: #7fd4ff;
   font-weight: 600;
+}
+
+/* Real ish vaqti — belgisiz, faqat qiymat: yashil, sal qalinroq. */
+.proj-time-realbig {
+  color: #57d68d;
+  font-weight: 800;
+  font-size: 17px;
+}
+
+/* Qolgan vaqt (teskari sanoq) — xuddi yuqoridagidek, lekin qizil. */
+.proj-time-countdown {
+  color: #ff6b6b;
+  font-weight: 800;
+  font-size: 17px;
+}
+
+.proj-time-empcount {
+  opacity: 0.9;
 }
 
 .proj-time-done {

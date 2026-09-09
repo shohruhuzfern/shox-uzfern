@@ -665,19 +665,24 @@ function projectProgressInfo(proj, atMs) {
   const realHours = liveWorkedRealHours(proj, now);
   const count = projectEmployeeCount(proj.id);
   const rateSum = projectHourlyRateSum(proj.id);
-  const done = total > 0 && worked >= total;
-  let remainingHours = Math.max(0, total - worked);
+  // Loyiha "tugadi" deb belgilanishi ENDI faqat REAL vaqt (realHours) belgilangan
+  // maqsadga (total) yetganda sodir bo'ladi — ulangan xodimlar soniga BOG'LIQ EMAS.
+  // Xodimlar soni faqat xarajatni (va amaliy bajarish imkoniyatini) belgilaydi,
+  // lekin loyiha necha xodim ulanganidan qat'iy nazar bir xil REAL muddatda tugaydi.
+  const done = total > 0 && realHours >= total;
+  let remainingHours = Math.max(0, total - realHours);
   let etaMs = null;
   let projectedTotalCost = workedCost;
   if (!done && count > 0) {
-    const remainingRealHours = remainingHours / count;
-    etaMs = advanceEffectiveHours(now, remainingRealHours, proj.nightShift);
-    projectedTotalCost = workedCost + remainingRealHours * rateSum;
+    // Real soat 1:1 (xodimlar soniga ko'paytirilmasdan) o'tadi — shuning uchun qolgan
+    // vaqt to'g'ridan-to'g'ri `remainingHours`, bo'linish shart emas.
+    etaMs = advanceEffectiveHours(now, remainingHours, proj.nightShift);
+    projectedTotalCost = workedCost + remainingHours * rateSum;
   }
   return {
     total,
     worked: Math.min(worked, total),
-    realHours,
+    realHours: Math.min(realHours, total),
     done,
     remainingHours,
     etaMs,
@@ -1475,6 +1480,9 @@ function finishProjectNow(id) {
   const total = projectTotalManHours(proj);
   if (total > 0) {
     proj.workedManHours = Math.max(Number(proj.workedManHours) || 0, total);
+    // "Tugadi" holati endi REAL vaqtga (workedRealHours) qarab aniqlanadi — shuning
+    // uchun qo'lda tugatishda buni ham majburan maqsadga yetkazish kerak.
+    proj.workedRealHours = Math.max(Number(proj.workedRealHours) || 0, total);
   }
   proj.checkpointAt = now;
   updateProjectTimeInfo(proj);
@@ -1553,37 +1561,40 @@ function updateProjectTimeInfo(proj) {
     // "tugatish"ning ma'nosi yo'q.
     if (finishBtn) finishBtn.classList.toggle("hidden", info.done || info.total <= 0);
     const startedLine = `<div class="proj-time-line proj-time-started">Boshlandi: ${formatDateTime(proj.startedAt)}</div>`;
+    const empCount = state.connections.filter((c) => c.projectId === proj.id).length;
+    const empCountLine = `<div class="proj-time-line proj-time-empcount">Ulangan xodimlar soni: ${empCount}</div>`;
 
     if (info.total <= 0) {
       timeEl.innerHTML = startedLine;
       el.classList.remove("proj-done", "proj-paused");
     } else if (info.done) {
-      const realLine = `<div class="proj-time-line proj-time-real">Real ish vaqti: ${formatDurationHours(info.realHours)}</div>`;
+      // Real ish vaqti — endi belgi (label) siz, faqat yashil/qalin qiymat sifatida.
+      const realLine = `<div class="proj-time-line proj-time-realbig">${formatDurationHours(info.realHours)}</div>`;
+      const costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ${formatMoney(info.workedCost)}</div>`;
       timeEl.innerHTML =
         startedLine +
         realLine +
         `<div class="proj-time-line proj-time-done">✓ Tugadi</div>` +
-        `<div class="proj-time-line proj-time-cost">Jami xarajat: ${formatMoney(info.workedCost)}</div>`;
+        empCountLine +
+        costLine;
       el.classList.add("proj-done");
       el.classList.remove("proj-paused");
     } else {
       el.classList.remove("proj-done");
-      const elapsedLine = `<div class="proj-time-line">O'tdi (jami, xodimlar soniga ko'paytirilgan): ${formatDurationHours(info.worked)}</div>`;
-      // "Real ish vaqti" — nechta xodim ulanganidan qat'iy nazar, jarayon HAQIQATDA
-      // qancha real (ish jadvali bo'yicha) vaqt davomida faol bo'lganini ko'rsatadi.
-      const realLine = `<div class="proj-time-line proj-time-real">Real ish vaqti: ${formatDurationHours(info.realHours)}</div>`;
-      let statusLine;
+      // Real ish vaqti — nechta xodim ulanganidan qat'iy nazar, jarayon HAQIQATDA
+      // qancha real vaqt davomida faol bo'lganini ko'rsatadi (yashil, qalin, belgisiz).
+      const realLine = `<div class="proj-time-line proj-time-realbig">${formatDurationHours(info.realHours)}</div>`;
+      // Qolgan vaqt — teskari sanoq, xuddi yuqoridagidek (belgisiz), lekin qizil rangda.
+      const countdownLine = `<div class="proj-time-line proj-time-countdown">${formatDurationHours(info.remainingHours)}</div>`;
       let costLine;
       if (info.paused) {
-        statusLine = `<div class="proj-time-line proj-time-paused">⏸ Xodim ulanmagan — vaqt to'xtagan</div>`;
-        costLine = `<div class="proj-time-line proj-time-cost">Xarajat (hozircha): ${formatMoney(info.workedCost)}</div>`;
+        costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi (hozircha): ${formatMoney(info.workedCost)}</div>`;
         el.classList.add("proj-paused");
       } else {
-        statusLine = `<div class="proj-time-line">Qoldi: ${formatDurationHours(info.remainingHours)} (tugaydi: ${formatDateTime(info.etaMs)})</div>`;
-        costLine = `<div class="proj-time-line proj-time-cost">Taxminiy xarajat: ~${formatMoney(info.projectedTotalCost)}</div>`;
+        costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ~${formatMoney(info.projectedTotalCost)}</div>`;
         el.classList.remove("proj-paused");
       }
-      timeEl.innerHTML = startedLine + realLine + elapsedLine + statusLine + costLine;
+      timeEl.innerHTML = startedLine + realLine + countdownLine + empCountLine + costLine;
     }
   }
 
