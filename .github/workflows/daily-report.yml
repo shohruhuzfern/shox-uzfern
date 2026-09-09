@@ -3,6 +3,7 @@ name: Kunlik Telegram hisobot
 on:
   schedule:
     # 13:00 UTC = 18:00 Toshkent vaqti (UTC+5)
+    # (cron avtomatik ishga tushishi uchun qayta ro'yxatdan o'tkazildi)
     - cron: "0 13 * * *"
   workflow_dispatch: {}
 
