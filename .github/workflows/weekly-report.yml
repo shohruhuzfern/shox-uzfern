@@ -1,0 +1,32 @@
+name: Haftalik tugatilgan ishlar hisoboti
+
+on:
+  schedule:
+    # 14:00 UTC = 19:00 Toshkent vaqti (UTC+5), har shanba kuni.
+    - cron: "0 14 * * 6"
+  workflow_dispatch: {}
+
+jobs:
+  send-weekly-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Bog'liqliklarni o'rnatish
+        run: npm install
+
+      - name: Playwright brauzerini o'rnatish
+        run: npx playwright install --with-deps chromium
+
+      - name: Haftalik hisobotni yuborish
+        env:
+          PAGE_URL: ${{ vars.PAGE_URL }}
+          APP_EMAIL: ${{ secrets.APP_EMAIL }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node scripts/send-weekly-report.js
