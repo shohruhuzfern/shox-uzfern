@@ -52,6 +52,7 @@
         </div>
       </div>
       <div class="toolbar-divider"></div>
+      <button id="btnSettings" class="btn btn-icon" title="Sozlamalar (karta o'lchami, chiziq ko'rinishi)">⚙</button>
       <button id="btnLogout" class="btn btn-icon" title="Chiqish">⎋</button>
     </div>
   </header>
@@ -59,8 +60,9 @@
   <div id="exportToast" class="export-toast hidden">Eksport tayyorlanmoqda...</div>
 
   <div class="main-layout">
-    <aside class="sidebar">
+    <aside class="sidebar" id="employeeSidebar">
       <div class="sidebar-header">
+        <button type="button" id="btnCompactEmp" class="sidebar-compact-btn" title="Faqat rasm (ixcham)">⇤</button>
         Xodimlar ro'yxati
         <span class="sidebar-header-hint">(ish maydoniga sudrab tashlang, o'ng tugma — tahrirlash/o'chirish)</span>
       </div>
@@ -89,8 +91,9 @@
       <div id="projectTablesPanel" class="project-tables-panel hidden"></div>
     </main>
 
-    <aside class="sidebar sidebar-right">
+    <aside class="sidebar sidebar-right" id="projectSidebar">
       <div class="sidebar-header">
+        <button type="button" id="btnCompactProj" class="sidebar-compact-btn" title="Faqat rasm (ixcham)">⇥</button>
         Loyihalar ro'yxati
         <span class="sidebar-header-hint">(ish maydoniga sudrab tashlang, o'ng tugma — tahrirlash/o'chirish)</span>
       </div>
@@ -107,6 +110,55 @@
         </button>
       </div>
     </aside>
+  </div>
+
+  <footer class="bottom-bar">
+    <button type="button" id="btnCompletedWorks" class="bottom-bar-btn">
+      📋 Qilingan ishlar
+      <span id="completedWorksCount" class="completed-badge hidden">0</span>
+    </button>
+  </footer>
+
+  <!-- Qilingan ishlar (haftalik tugatilgan loyihalar) modali -->
+  <div id="completedWorksModal" class="modal-overlay hidden">
+    <div class="modal modal-wide">
+      <h2>Qilingan ishlar (shu hafta)</h2>
+      <p class="auth-hint">Har shanba kuni soat 19:00'da bu ro'yxat botga hisobot qilib yuborilib, tozalanadi.</p>
+      <div id="completedWorksList" class="completed-works-list">
+        <div class="sidebar-empty">Bu hafta hali tugagan loyiha yo'q.</div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" data-close="completedWorksModal">Yopish</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sozlamalar modali -->
+  <div id="settingsModal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2>Sozlamalar</h2>
+
+      <label>Xodim kartasi o'lchami: <span id="settingsEmpScaleVal" class="settings-val">100%</span>
+        <input type="range" id="settingsEmpScale" min="60" max="160" step="5" value="100">
+      </label>
+
+      <label>Loyiha kartasi o'lchami: <span id="settingsProjScaleVal" class="settings-val">100%</span>
+        <input type="range" id="settingsProjScale" min="60" max="160" step="5" value="100">
+      </label>
+
+      <label>Ulanish chizig'i rangi
+        <input type="color" id="settingsConnColor" value="#4f8cff">
+      </label>
+
+      <label>Ulanish chizig'i qalinligi: <span id="settingsConnWidthVal" class="settings-val">2.2px</span>
+        <input type="range" id="settingsConnWidth" min="1" max="6" step="0.2" value="2.2">
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" id="settingsResetBtn" class="btn btn-secondary">Standart holatga</button>
+        <button type="button" class="btn btn-primary" data-close="settingsModal">Yopish</button>
+      </div>
+    </div>
   </div>
 
   <!-- Xodim qo'shish modali -->
