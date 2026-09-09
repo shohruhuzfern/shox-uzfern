@@ -83,4 +83,25 @@ async function sendTelegramPhoto(filePath, caption) {
   }
 }
 
-module.exports = { openLoggedInPage, sendTelegramMessage, sendTelegramPhoto, PAGE_URL };
+/**
+ * Telegram Bot API orqali fayl (hujjat) yuboradi — masalan ma'lumotlar zaxira nusxasi (.json).
+ */
+async function sendTelegramDocument(filePath, filename, caption) {
+  assertEnv();
+  const fs = require("fs");
+  const form = new FormData();
+  form.append("chat_id", CHAT_ID);
+  if (caption) form.append("caption", caption);
+  form.append("document", new Blob([fs.readFileSync(filePath)]), filename || "fayl");
+
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+    method: "POST",
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error("Telegram fayl yuborishda xatolik: " + JSON.stringify(data));
+  }
+}
+
+module.exports = { openLoggedInPage, sendTelegramMessage, sendTelegramPhoto, sendTelegramDocument, PAGE_URL };
