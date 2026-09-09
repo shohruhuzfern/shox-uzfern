@@ -498,6 +498,27 @@ function commitProjectProgress(proj, atMs) {
   if (count > 0) {
     proj.workedRealHours = (Number(proj.workedRealHours) || 0) + hours;
   }
+
+  // Har bir ULANGAN xodimning shu loyihadagi shaxsiy hissasini ham alohida
+  // ("employeeLedger") qayd etamiz — bu loyiha tugagach "kim qancha ishlagani"ni
+  // bilish uchun kerak. Xodim keyinchalik uzilib qolsa ham, bu yozuv saqlanib
+  // qoladi (faqat o'sishi to'xtaydi) — shu orqali tarixiy hissa yo'qolmaydi.
+  // "Ko'p tarmoqli" xodim uchun `employeeWeightOnProject` uning vaqtini shu payt
+  // ulangan barcha loyihalari orasida teng bo'lib beradi (masalan 2 ta bo'lsa — yarmi).
+  if (!proj.employeeLedger) proj.employeeLedger = {};
+  state.connections
+    .filter((c) => c.projectId === proj.id)
+    .forEach((c) => {
+      const emp = state.employees.find((e) => e.id === c.employeeId);
+      const weight = employeeWeightOnProject(c.employeeId);
+      const rate = employeeHourlyRate(emp);
+      const entry = proj.employeeLedger[c.employeeId] || { realHours: 0, cost: 0, name: "" };
+      entry.realHours += hours * weight;
+      entry.cost += hours * weight * rate;
+      if (emp) entry.name = emp.name;
+      proj.employeeLedger[c.employeeId] = entry;
+    });
+
   proj.checkpointAt = now;
 }
 
@@ -524,6 +545,7 @@ function toggleProjectNightShift(id) {
     el.classList.toggle("night-active", !!proj.nightShift);
   }
   updateProjectTimeInfo(proj);
+  renderProjectEmployeeTables();
   saveState();
 }
 
@@ -557,6 +579,59 @@ function liveWorkedRealHours(proj, atMs) {
   const count = projectEmployeeCount(proj.id);
   const hours = count > 0 ? effectiveWorkHoursBetween(proj.checkpointAt, now, proj.nightShift) : 0;
   return (Number(proj.workedRealHours) || 0) + hours;
+}
+
+/**
+ * Berilgan xodimning shu loyihadagi (saqlangan + hozirgacha "jonli" to'plangan)
+ * shaxsiy hissasini qaytaradi: {realHours, cost, name}. Xodim hozir bu loyihaga
+ * ulanmagan bo'lsa (masalan avval ulangan, keyin uzilgan), faqat saqlangan
+ * (muzlatilgan) qiymat qaytariladi — endi o'smaydi.
+ */
+function liveEmployeeLedgerEntry(proj, employeeId, atMs) {
+  const stored = (proj.employeeLedger && proj.employeeLedger[employeeId]) || { realHours: 0, cost: 0, name: "" };
+  const isConnected = state.connections.some((c) => c.projectId === proj.id && c.employeeId === employeeId);
+  if (!proj.placed || !proj.checkpointAt || !isConnected) return stored;
+  const now = atMs || Date.now();
+  const hours = effectiveWorkHoursBetween(proj.checkpointAt, now, proj.nightShift);
+  const weight = employeeWeightOnProject(employeeId);
+  const emp = state.employees.find((e) => e.id === employeeId);
+  const rate = employeeHourlyRate(emp);
+  return {
+    realHours: stored.realHours + hours * weight,
+    cost: stored.cost + hours * weight * rate,
+    name: (emp && emp.name) || stored.name,
+  };
+}
+
+/**
+ * Loyihaga hozir ulangan VA avval ulanib, keyin uzilib qolgan (lekin hissasi
+ * saqlanib qolgan) barcha xodimlarning jadval qatorlarini tayyorlaydi.
+ * Har bir qator: {employeeId, name, connected, realHours, cost}.
+ * Ulangan xodimlar tepada, so'ng eng ko'p ishlaganidan boshlab tartiblanadi.
+ */
+function projectLedgerRows(proj, atMs) {
+  const now = atMs || Date.now();
+  const connectedIds = new Set(state.connections.filter((c) => c.projectId === proj.id).map((c) => c.employeeId));
+  const historyIds = new Set(Object.keys(proj.employeeLedger || {}));
+  const allIds = new Set([...connectedIds, ...historyIds]);
+  const rows = [];
+  allIds.forEach((employeeId) => {
+    const entry = liveEmployeeLedgerEntry(proj, employeeId, now);
+    const emp = state.employees.find((e) => e.id === employeeId);
+    const name = (emp && emp.name) || entry.name || "(o'chirilgan xodim)";
+    rows.push({
+      employeeId,
+      name,
+      connected: connectedIds.has(employeeId),
+      realHours: entry.realHours,
+      cost: entry.cost,
+    });
+  });
+  rows.sort((a, b) => {
+    if (a.connected !== b.connected) return a.connected ? -1 : 1;
+    return b.realHours - a.realHours;
+  });
+  return rows;
 }
 
 /**
@@ -1293,10 +1368,13 @@ function placeProjectOnCanvas(proj, clientX, clientY) {
   proj.workedManHours = 0;
   proj.workedCost = 0;
   proj.workedRealHours = 0;
+  proj.employeeLedger = {};
+  if (proj.tableCollapsed === undefined) proj.tableCollapsed = false;
 
   renderProject(proj);
   updateProjectRosterItemPlacedState(proj.id);
   updateEmptyHint();
+  renderProjectEmployeeTables();
   saveState();
 }
 
@@ -1412,6 +1490,7 @@ function updateAllProjectTimeInfo() {
   state.projects.forEach((proj) => {
     if (proj.placed) updateProjectTimeInfo(proj);
   });
+  renderProjectEmployeeTables();
 }
 
 /**
@@ -1485,6 +1564,83 @@ function updateProjectCardContent(proj) {
   el.querySelector(".proj-name").textContent = proj.name;
   el.querySelector(".proj-hours").textContent = projectQtyLabel(proj);
   updateProjectTimeInfo(proj);
+  renderProjectEmployeeTables();
+}
+
+/* ------------------------- Loyiha-xodim hisobot jadvallari (o'ng panel) ------------------------- */
+
+const projectTablesPanelEl = document.getElementById("projectTablesPanel");
+
+/**
+ * Ish maydonidagi HAR BIR joylashtirilgan loyiha uchun avtomatik ravishda bitta
+ * (yig'iladigan/yoyiladigan) jadval chizadi: loyiha nomi, ajratilgan vaqt va unga
+ * ulangan (hamda avval ulanib, keyin uzilgan) xodimlarning shaxsiy hissasi
+ * (vaqt + summasi). "Ko'p tarmoqli" xodimning vaqti bir nechta loyiha orasida
+ * avtomatik bo'linib hisoblanadi (masalan 2 loyihaga ulangan bo'lsa — har biriga
+ * yarmi). Bu panel #workspace ichida joylashgani uchun Export (JPG/PDF) qilinganda
+ * ham to'liq rasmga tushadi.
+ */
+function renderProjectEmployeeTables() {
+  if (!projectTablesPanelEl) return;
+  const placedProjects = state.projects.filter((p) => p.placed);
+  if (placedProjects.length === 0) {
+    projectTablesPanelEl.innerHTML = "";
+    projectTablesPanelEl.classList.add("hidden");
+    return;
+  }
+  projectTablesPanelEl.classList.remove("hidden");
+
+  const now = Date.now();
+  projectTablesPanelEl.innerHTML = placedProjects
+    .map((proj) => {
+      const collapsed = !!proj.tableCollapsed;
+      const rows = projectLedgerRows(proj, now);
+      const rowsHtml = rows.length
+        ? rows
+            .map(
+              (r) => `
+          <tr class="${r.connected ? "" : "ptbl-row-disconnected"}">
+            <td class="ptbl-td-name">${escapeHtml(r.name)}${r.connected ? "" : ' <span class="ptbl-tag">uzilgan</span>'}</td>
+            <td class="ptbl-td-time">${formatDurationHours(r.realHours)}</td>
+            <td class="ptbl-td-cost">${formatMoney(r.cost)}</td>
+          </tr>`
+            )
+            .join("")
+        : `<tr><td colspan="3" class="ptbl-empty-row">Hali xodim ulanmagan</td></tr>`;
+
+      return `
+        <div class="ptbl" data-project-id="${proj.id}">
+          <div class="ptbl-header" data-role="ptbl-toggle">
+            <span class="ptbl-name">${escapeHtml(proj.name)}</span>
+            <button type="button" class="ptbl-collapse-btn" data-role="ptbl-toggle" title="Yig'ish/Yoyish">${collapsed ? "+" : "−"}</button>
+          </div>
+          <div class="ptbl-body"${collapsed ? " hidden" : ""}>
+            <div class="ptbl-allocated">Ajratilgan vaqt: ${escapeHtml(formatHours(projectTotalManHours(proj)))}</div>
+            <table class="ptbl-table">
+              <thead><tr><th>Xodim</th><th>Vaqt</th><th>Summasi</th></tr></thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
+if (projectTablesPanelEl) {
+  projectTablesPanelEl.addEventListener("click", (e) => {
+    const toggleEl = e.target.closest('[data-role="ptbl-toggle"]');
+    if (!toggleEl) return;
+    const cardEl = e.target.closest(".ptbl");
+    if (!cardEl) return;
+    const proj = state.projects.find((p) => p.id === cardEl.dataset.projectId);
+    if (!proj) return;
+    proj.tableCollapsed = !proj.tableCollapsed;
+    const bodyEl = cardEl.querySelector(".ptbl-body");
+    const btnEl = cardEl.querySelector(".ptbl-collapse-btn");
+    if (bodyEl) bodyEl.hidden = !!proj.tableCollapsed;
+    if (btnEl) btnEl.textContent = proj.tableCollapsed ? "+" : "−";
+    saveState();
+  });
 }
 
 /**
@@ -1528,6 +1684,7 @@ function unplaceProject(id) {
 
   updateProjectRosterItemPlacedState(id);
   updateEmptyHint();
+  renderProjectEmployeeTables();
   saveState();
 }
 
@@ -1555,6 +1712,7 @@ function deleteEmployee(id) {
 
   updateEmptyHint();
   updateSidebarEmptyState();
+  renderProjectEmployeeTables();
   saveState();
 }
 
@@ -1591,6 +1749,7 @@ function deleteProject(id) {
 
   updateEmptyHint();
   updateProjectSidebarEmptyState();
+  renderProjectEmployeeTables();
   saveState();
 }
 
@@ -1791,6 +1950,7 @@ function createConnection(employeeId, empSide, projectId, projSide) {
 
   updateEmployeeConnPointVisual(employeeId);
   affectedProjectIds.forEach((pid) => refreshProjectLayout(pid));
+  renderProjectEmployeeTables();
 
   saveState();
 }
@@ -1815,6 +1975,7 @@ function deleteConnection(id) {
   removeConnectionEl(id);
   updateEmployeeConnPointVisual(conn.employeeId);
   affectedProjectIds.forEach((pid) => refreshProjectLayout(pid));
+  renderProjectEmployeeTables();
   saveState();
 }
 
@@ -2192,6 +2353,23 @@ function loadState(parsed) {
           workedCost: hasTimer ? Number(p.workedCost) || 0 : 0,
           workedRealHours: hasTimer ? Number(p.workedRealHours) || 0 : 0,
           nightShift: !!p.nightShift,
+          // Har bir xodimning shu loyihadagi shaxsiy hissasi (soat + summasi) — timer
+          // yangidan boshlanган bo'lsa (hasTimer=false) bo'sh holatdan boshlaymiz,
+          // aks holda avvalgi (saqlangan) yozuvlarni tozalab olib qolamiz.
+          employeeLedger:
+            hasTimer && p.employeeLedger && typeof p.employeeLedger === "object"
+              ? Object.fromEntries(
+                  Object.entries(p.employeeLedger).map(([eid, v]) => [
+                    eid,
+                    {
+                      realHours: Number(v && v.realHours) || 0,
+                      cost: Number(v && v.cost) || 0,
+                      name: (v && v.name) || "",
+                    },
+                  ])
+                )
+              : {},
+          tableCollapsed: !!p.tableCollapsed,
         };
       })
     : [];
@@ -2236,6 +2414,7 @@ function renderAll() {
   updateSidebarEmptyState();
   updateProjectSidebarEmptyState();
   applyView();
+  renderProjectEmployeeTables();
 }
 
 /**
@@ -2332,7 +2511,7 @@ function startFirebaseSync() {
       if (remote) {
         loadState(remote);
         fbLastSyncedJSON = JSON.stringify(remote);
-          } else {
+      } else {
         // Bulutda hali hech narsa yo'q. localStorage'dan o'qiymiz, lekin FAQAT
         // unda haqiqatan ham xodim yoki loyiha bo'lsa, bulutga yuboramiz —
         // aks holda (masalan tarmoq nosozligi tufayli "remote" noto'g'ri bo'sh
