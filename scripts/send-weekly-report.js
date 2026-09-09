@@ -28,8 +28,9 @@ function formatDateShort(ms) {
     } else {
       items.sort((a, b) => (a.finishedAt || 0) - (b.finishedAt || 0));
       const lines = items.map((it, i) => {
-        const when = it.finishedAt ? formatDateShort(it.finishedAt) : "?";
-        return `${i + 1}) "${it.name}" — ${when}\n   Ajratilgan vaqt: ${it.allocatedText || "-"}, Jami xarajat: ${it.totalCostText || "-"}`;
+        const started = it.startedAt ? formatDateShort(it.startedAt) : "?";
+        const finished = it.finishedAt ? formatDateShort(it.finishedAt) : "?";
+        return `${i + 1}) "${it.name}"\n   Boshlandi: ${started} — Tugadi: ${finished}\n   Ajratilgan vaqt: ${it.allocatedText || "-"}, Real ish vaqti: ${it.realHoursText || "-"}, Jami xarajat: ${it.totalCostText || "-"}`;
       });
       const text = `📅 Haftalik hisobot — shu hafta ${items.length} ta loyiha tugadi:\n\n${lines.join("\n\n")}`;
       await sendTelegramMessage(text);
