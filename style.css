@@ -19,6 +19,9 @@
   --multi-accent-soft: rgba(255, 169, 77, 0.15);
   --radius: 10px;
   --shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  /* Ulanish chizig'ining ko'rinishi — Sozlamalar panelidan o'zgartiriladi. */
+  --conn-color: #4f8cff;
+  --conn-width: 2.2;
 }
 
 * { box-sizing: border-box; }
@@ -299,6 +302,7 @@ body {
 }
 
 .sidebar-header {
+  position: relative;
   flex: 0 0 auto;
   padding: 14px 16px 10px;
   font-size: 13px;
@@ -306,6 +310,66 @@ body {
   color: var(--text);
   border-bottom: 1px solid var(--border);
 }
+
+/* Panelni "faqat rasm" (ixcham) ko'rinishiga o'tkazish tugmasi */
+.sidebar-compact-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-muted-clear);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  z-index: 2;
+}
+
+.sidebar-compact-btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.sidebar-compact-btn.active { border-color: var(--accent); color: var(--accent-hover); }
+
+.sidebar.sidebar-right .sidebar-compact-btn { right: auto; left: 8px; }
+
+/* ---- Ixcham (faqat rasm) ko'rinish ---- */
+
+.sidebar.compact {
+  flex: 0 0 84px;
+  width: 84px;
+}
+
+.sidebar.compact .sidebar-header {
+  padding: 34px 6px 8px;
+  text-align: center;
+  font-size: 0; /* sarlavha matnini yashiramiz, tugma ko'rinib turadi */
+}
+
+.sidebar.compact .sidebar-header-hint { display: none; }
+
+.sidebar.compact .sidebar-list { padding: 8px 6px; gap: 6px; align-items: center; }
+
+.sidebar.compact .roster-item {
+  width: 100%;
+  justify-content: center;
+  padding: 5px;
+  gap: 0;
+}
+
+.sidebar.compact .roster-info { display: none; }
+
+.sidebar.compact .roster-photo { width: 56px; height: 56px; }
+
+.sidebar.compact .sidebar-empty { font-size: 10px; padding: 10px 4px; }
+
+.sidebar.compact .sidebar-stats { display: none; }
+
+.sidebar.compact .sidebar-footer { padding: 8px 6px; }
+
+.sidebar.compact .sidebar-footer .btn { padding: 8px 4px; font-size: 0; }
+.sidebar.compact .sidebar-footer .btn-icon-plus { font-size: 17px; }
 
 .sidebar-header-hint {
   display: block;
@@ -551,15 +615,16 @@ body {
   position: absolute;
   left: 0;
   top: 0;
-  /* Eksport (html2canvas) paytida ba'zi brauzerlar "overflow: visible" bilan
-     1x1px SVG chegarasidan tashqariga chiqqan chiziqlarni to'g'ri suratga
-     ololmay, ularni butunlay ko'rsatmasligi mumkin. Shuning uchun SVG'ga
-     ish maydonidagi barcha mumkin bo'lgan joylashuvni qamrab oladigan katta
-     qat'iy o'lcham beramiz — shunda chiziqlar hech qanday holatda "kesilib"
-     qolmaydi.
-  */
-  width: 30000px;
-  height: 30000px;
+  /* Oddiy (ekrandagi) ko'rinishda "overflow: visible" tufayli chiziqlar bu
+     qutidan tashqariga chiqib ham bemalol chiziladi — shuning uchun bu yerda
+     katta o'lcham kerak emas. Aksincha, juda katta o'lcham (masalan 30000px)
+     eksport (html2canvas) paytida zararli: u SVG'ni ALOHIDA rasm sifatida
+     o'z o'lchamida rasterlashga urinadi va brauzerning canvas hajm
+     chegarasidan oshib ketib, butunlay bo'sh rasm qaytaradi (chiziqlar
+     ko'rinmay qoladi). Eksport paytida script.js SVG'ni vaqtincha aynan
+     kerakli o'lchamga sozlaydi. */
+  width: 10px;
+  height: 10px;
   overflow: visible;
   pointer-events: none;
 }
@@ -970,15 +1035,15 @@ body {
 
 .conn-line {
   fill: none;
-  stroke: var(--accent);
-  stroke-width: 2.2;
+  stroke: var(--conn-color);
+  stroke-width: var(--conn-width);
   opacity: 0.85;
 }
 
 .conn-line:hover {
   stroke: var(--danger);
   opacity: 1;
-  stroke-width: 3;
+  stroke-width: calc(var(--conn-width) + 0.8);
 }
 
 .conn-line-temp {
@@ -993,6 +1058,83 @@ body {
 .conn-line-dot {
   fill: var(--accent);
   pointer-events: none;
+}
+
+/* ---------- Pastki panel ("Qilingan ishlar" tugmasi) ---------- */
+
+.bottom-bar {
+  flex: 0 0 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  z-index: 40;
+}
+
+.bottom-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.bottom-bar-btn:hover { background: #232838; border-color: var(--accent); }
+
+.completed-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #0b1220;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.completed-badge.hidden { display: none; }
+
+.modal-wide {
+  width: 560px;
+}
+
+.completed-works-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 50vh;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+.completed-works-list::-webkit-scrollbar { width: 7px; }
+.completed-works-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.completed-work-card .ptbl-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+}
+
+.completed-work-date {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* ---------- Modal ---------- */
@@ -1112,6 +1254,29 @@ body {
   accent-color: var(--multi-accent);
   cursor: pointer;
   flex: 0 0 auto;
+}
+
+/* ---------- Sozlamalar modali ---------- */
+
+.settings-val {
+  color: var(--accent-hover);
+  font-weight: 700;
+}
+
+#settingsModal .modal input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+#settingsModal .modal input[type="color"] {
+  width: 100%;
+  height: 34px;
+  padding: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
 }
 
 /* ---------- Scrollbar (webkit) ---------- */
@@ -1242,10 +1407,21 @@ body {
   font-style: italic;
 }
 
-/* Eksport (JPG/PDF) paytida har bir faol loyiha kartasining tagiga vaqtincha
-   joylashtiriladigan jadval — doim to'liq ochiq holatda, dunyo koordinatasida
-   (pan/zoom bilan birga harakatlanadi), shuning uchun qat'iy pozitsiya kerak. */
+/* Eksport (JPG/PDF) paytida har bir faol loyiha kartasining pastki burchagiga
+   "shtamp"dek biriktirilib joylashtiriladigan jadval — doim to'liq ochiq
+   holatda, dunyo koordinatasida (pan/zoom bilan birga harakatlanadi). */
 .ptbl-export {
   position: absolute;
   z-index: 8;
+  transform: rotate(-1.5deg);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.ptbl-export.ptbl-export-right {
+  transform: rotate(1.5deg);
+}
+
+.ptbl-export .ptbl-header {
+  background: rgba(79, 140, 255, 0.12);
 }
