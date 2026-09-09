@@ -1395,6 +1395,9 @@ function renderProject(proj) {
       <span class="night-toggle-text">Tungi smena</span>
       <span class="night-toggle-switch"><span class="night-toggle-knob"></span></span>
     </button>
+    <button type="button" class="finish-btn hidden" data-role="finish-btn" title="Loyihani hozir (muddatidan oldin ham) tugatish">
+      <span>✔ Tugatish</span>
+    </button>
     <img class="proj-photo" src="${proj.photo || DEFAULT_PROJ_IMG}" alt="">
     <div class="proj-name">${escapeHtml(proj.name)}</div>
     <div class="proj-hours">${escapeHtml(projectQtyLabel(proj))}</div>
@@ -1413,6 +1416,16 @@ function renderProject(proj) {
     e.stopPropagation();
     toggleProjectNightShift(proj.id);
   });
+  const finishBtn = el.querySelector('[data-role="finish-btn"]');
+  finishBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+  finishBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const current = state.projects.find((p) => p.id === proj.id);
+    if (!current) return;
+    if (confirm(`"${current.name}" loyihasini hozir tugatishni tasdiqlaysizmi?\nBu amalni orqaga qaytarib bo'lmaydi.`)) {
+      finishProjectNow(current.id);
+    }
+  });
   el.querySelector('[data-role="delete"]').addEventListener("mousedown", (e) => e.stopPropagation());
   el.querySelector('[data-role="delete"]').addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1422,6 +1435,32 @@ function renderProject(proj) {
   });
 
   updateProjectTimeInfo(proj);
+}
+
+/**
+ * Loyihani hozir (muddatidan oldin ham) qo'lda tugatadi: hozirgacha to'plangan
+ * progress qayd etiladi (commitProjectProgress), so'ng kerakli jami ish-soatiga
+ * yetganini majburlab belgilaydi — shu orqali loyiha xuddi tabiiy ravishda
+ * o'z vaqtida tugagandek "✓ Tugadi" holatiga o'tadi. Bu payt allaqachon
+ * to'plangan haqiqiy ish soatlari/xarajat/xodimlar hissasi (employeeLedger)
+ * o'zgarishsiz qoladi — faqat "qolgan vaqt" hisoblanishi to'xtaydi. Natijada
+ * 15 daqiqalik avtomatik Telegram xabarnomasi (check-completed-projects.js)
+ * keyingi ishga tushishida buni tabiiy tugagan loyiha kabi aniqlab, yakuniy
+ * xodim jadvali bilan birga xabar yuboradi.
+ */
+function finishProjectNow(id) {
+  const proj = state.projects.find((p) => p.id === id);
+  if (!proj || !proj.placed) return;
+  const now = Date.now();
+  commitProjectProgress(proj, now);
+  const total = projectTotalManHours(proj);
+  if (total > 0) {
+    proj.workedManHours = Math.max(Number(proj.workedManHours) || 0, total);
+  }
+  proj.checkpointAt = now;
+  updateProjectTimeInfo(proj);
+  renderProjectEmployeeTables();
+  saveState();
 }
 
 /**
@@ -1440,11 +1479,17 @@ function updateProjectTimeInfo(proj) {
   if (!el) return;
   const timeEl = el.querySelector(".proj-time");
   if (!timeEl) return;
+  const finishBtn = el.querySelector('[data-role="finish-btn"]');
 
   if (!proj.startedAt) {
     timeEl.innerHTML = "";
+    if (finishBtn) finishBtn.classList.add("hidden");
   } else {
     const info = projectProgressInfo(proj);
+    // "Tugatish" tugmasi faqat hali tugamagan va kerakli jami vaqti belgilangan
+    // (total > 0) loyihalarda ko'rinadi — allaqachon tugagan loyihani qayta
+    // "tugatish"ning ma'nosi yo'q.
+    if (finishBtn) finishBtn.classList.toggle("hidden", info.done || info.total <= 0);
     const startedLine = `<div class="proj-time-line proj-time-started">Boshlandi: ${formatDateTime(proj.startedAt)}</div>`;
 
     if (info.total <= 0) {
@@ -2099,7 +2144,13 @@ document.getElementById("btnZoomReset").addEventListener("click", () => {
  * chegaralarini hisoblaydi (eksport paytida hech biri "kesilib" qolmasligi uchun).
  * Hech narsa joylashtirilmagan bo'lsa — null.
  */
-function computeContentWorldBounds() {
+/**
+ * `extraBottomYs` — ixtiyoriy, qo'shimcha (dunyo koordinatasidagi) pastki
+ * chegaralar ro'yxati (masalan, eksport paytida loyiha kartalarining tagiga
+ * vaqtincha joylashtirilgan jadvallarning pastki chetlari) — berilsa, ular
+ * ham chegaraga qo'shib hisoblanadi, shunda kadrdan "kesilib" qolmaydi.
+ */
+function computeContentWorldBounds(extraBottomYs) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   state.employees.filter((e) => e.placed).forEach((e) => {
     minX = Math.min(minX, e.x);
@@ -2114,6 +2165,11 @@ function computeContentWorldBounds() {
     maxX = Math.max(maxX, p.x + PROJ_W);
     maxY = Math.max(maxY, p.y + h);
   });
+  if (Array.isArray(extraBottomYs)) {
+    extraBottomYs.forEach((y) => {
+      if (isFinite(y)) maxY = Math.max(maxY, y);
+    });
+  }
   if (!isFinite(minX)) return null;
   return { minX, minY, maxX, maxY };
 }
@@ -2122,9 +2178,10 @@ function computeContentWorldBounds() {
  * Ko'rinishni (pan/zoom) shunday sozlaydiki, ish maydonidagi BARCHA kartalar bitta
  * kadrga (hech biri kesilmay) sig'adi — eksportdan oldin chaqiriladi. Muvaffaqiyatli
  * bo'lsa true, joylashtirilgan kontent umuman yo'q bo'lsa false qaytaradi.
+ * `extraBottomYs` — computeContentWorldBounds'ga qarang.
  */
-function fitViewToContent(padding = 70) {
-  const bounds = computeContentWorldBounds();
+function fitViewToContent(padding = 70, extraBottomYs) {
+  const bounds = computeContentWorldBounds(extraBottomYs);
   if (!bounds) return false;
   const rect = workspace.getBoundingClientRect();
   const contentW = Math.max(1, bounds.maxX - bounds.minX);
@@ -2158,16 +2215,80 @@ function hideExportToast() {
 }
 
 /** Ish maydonini (barcha kartalar bilan) rasmga (canvas) tushiradi. */
+/**
+ * Eksport uchun: hozir joylashtirilgan HAR BIR FAOL (hali tugamagan) loyiha
+ * kartasining tagiga, uning xodim-vaqt/xarajat jadvalini TO'LIQ OCHIQ holatda
+ * (tableCollapsed holatidan qat'iy nazar) vaqtincha joylashtiradi. Jadvallar
+ * dunyo koordinatasida (cardsLayer ichida, loyiha kartasi bilan bir xil
+ * pan/zoom qatlamida) joylashadi, shunda ular ham suratga to'liq tushadi va
+ * boshqa kartalar bilan ustma-ust tushmaydi (yuqori-o'ng burchakdagi qat'iy
+ * panel esa shu payt yashiriladi). Tugagan loyihalarning jadvali qo'shilmaydi —
+ * ularning yakuniy hisoboti allaqachon Telegramga yuborilgan bo'ladi.
+ * Qaytariladi: [{el, bottom}] — `bottom` shu elementning dunyo koordinatasidagi
+ * pastki cheti (fitViewToContent kadrga sig'dirishi uchun kerak).
+ */
+function createExportProjectTables() {
+  const now = Date.now();
+  const created = [];
+  state.projects
+    .filter((p) => p.placed && !projectProgressInfo(p, now).done)
+    .forEach((proj) => {
+      const rows = projectLedgerRows(proj, now);
+      const rowsHtml = rows.length
+        ? rows
+            .map(
+              (r) => `
+          <tr class="${r.connected ? "" : "ptbl-row-disconnected"}">
+            <td class="ptbl-td-name">${escapeHtml(r.name)}${r.connected ? "" : ' <span class="ptbl-tag">uzilgan</span>'}</td>
+            <td class="ptbl-td-time">${formatDurationHours(r.realHours)}</td>
+            <td class="ptbl-td-cost">${formatMoney(r.cost)}</td>
+          </tr>`
+            )
+            .join("")
+        : `<tr><td colspan="3" class="ptbl-empty-row">Hali xodim ulanmagan</td></tr>`;
+
+      const cardHeight = getProjectCardHeight(proj);
+      const top = proj.y + cardHeight + 14;
+      const el = document.createElement("div");
+      el.className = "ptbl ptbl-export";
+      el.style.left = proj.x + "px";
+      el.style.top = top + "px";
+      el.style.width = PROJ_W + "px";
+      el.innerHTML = `
+        <div class="ptbl-header">
+          <span class="ptbl-name">${escapeHtml(proj.name)}</span>
+        </div>
+        <div class="ptbl-body">
+          <div class="ptbl-allocated">Ajratilgan vaqt: ${escapeHtml(formatHours(projectTotalManHours(proj)))}</div>
+          <table class="ptbl-table">
+            <thead><tr><th>Xodim</th><th>Vaqt</th><th>Summasi</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>`;
+      cardsLayer.appendChild(el);
+      created.push({ el, bottom: top + el.offsetHeight });
+    });
+  return created;
+}
+
 async function captureWorkspaceCanvas() {
   if (typeof html2canvas !== "function") {
     throw new Error("html2canvas kutubxonasi yuklanmadi (internet aloqasini tekshiring)");
   }
   const prevView = { ...state.view };
-  const hadContent = fitViewToContent();
   // Joylashtirilgan hech narsa bo'lmasa ham, hozirgi (bo'sh) ko'rinishni o'zi eksport qilinadi.
   // Rasm/qalqib chiquvchi elementlar (kontekst menyu va h.k.) tasodifan tushib qolmasligi uchun yopamiz.
   closeRosterContextMenu();
   if (!exportMenuEl.classList.contains("hidden")) exportMenuEl.classList.add("hidden");
+
+  // Yuqori-o'ng burchakdagi qat'iy jadval panelini vaqtincha yashirib, o'rniga
+  // har bir faol loyiha kartasining tagiga to'liq ochiq jadval joylashtiramiz.
+  const prevPanelDisplay = projectTablesPanelEl.style.display;
+  projectTablesPanelEl.style.display = "none";
+  const exportTables = createExportProjectTables();
+  const extraBottoms = exportTables.map((t) => t.bottom);
+
+  const hadContent = fitViewToContent(70, extraBottoms);
   // Layout to'liq barqarorlashishi (kartalar qayta joylashishi) uchun bir necha kadr kutamiz.
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   await new Promise((resolve) => setTimeout(resolve, 60));
@@ -2178,6 +2299,9 @@ async function captureWorkspaceCanvas() {
     useCORS: true,
     logging: false,
   });
+
+  exportTables.forEach((t) => t.el.remove());
+  projectTablesPanelEl.style.display = prevPanelDisplay;
 
   if (hadContent) {
     state.view = prevView;
