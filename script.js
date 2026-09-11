@@ -352,6 +352,28 @@ function formatDaysSuffix(diffMs) {
   return " (" + text + " kun)";
 }
 
+/**
+ * `diffMs` (millisekund, real taqvim vaqti) ni jonli sanoq (taymer) matniga aylantiradi:
+ * "X kun Y soat", "Y soat Z daqiqa" yoki "Z daqiqa" ko'rinishida. "Tugash vaqti" (bashorat)
+ * dan farqli o'laroq, bu qiymat har tikda (WORK_TICK_MS) muqarrar kamayib boradi — chunki
+ * u shunchaki "hozir"dan "tugash vaqti"gacha bo'lgan taqvim farqi, ish tezligi o'zgarmasa
+ * ham vaqt o'tishi bilan pasayadi.
+ */
+function formatCountdown(diffMs) {
+  if (diffMs <= 0) return "0 daqiqa";
+  let totalMinutes = Math.floor(diffMs / 60000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  totalMinutes -= days * 24 * 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days > 0) parts.push(days + " kun");
+  if (hours > 0) parts.push(hours + " soat");
+  if (days === 0 && minutes > 0) parts.push(minutes + " daqiqa");
+  if (parts.length === 0) parts.push("0 daqiqa");
+  return parts.join(" ");
+}
+
 /* ---------------------- Loyiha nuqtalari joylashuvi ---------------------- */
 
 /**
@@ -1608,21 +1630,26 @@ function updateProjectTimeInfo(proj) {
     } else {
       el.classList.remove("proj-done");
       const finishLabel = `<div class="proj-time-line proj-time-label">Tugash vaqti</div>`;
-      let finishBig, costLine;
+      let finishBig, costLine, remainingLine = "";
       if (info.paused) {
         // Xodim ulanmagan — jarayon to'xtab turibdi, tugash vaqtini hisoblab bo'lmaydi.
         finishBig = `<div class="proj-time-line proj-time-finishbig">— <span class="proj-time-finish-note">(xodim ulanmagan)</span></div>`;
         costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi (hozircha): ${formatMoney(info.workedCost)}</div>`;
         el.classList.add("proj-paused");
       } else {
-        // Tugash vaqti — joriy xodimlar soniga qarab taxmin qilingan (soat:daqiqa),
-        // yonidagi qavsda qancha kun qolgani (eng yaqin 0,5 kunga yaxlitlangan).
+        // Tugash vaqti — joriy xodimlar soniga qarab taxmin qilingan BASHORAT (soat:daqiqa,
+        // yonidagi qavsda qancha kun qolgani, eng yaqin 0,5 kunga yaxlitlangan). Bu qiymat
+        // ish tezligi (xodimlar soni) o'zgarmasa, taxminan o'sha-o'sha turadi.
         const daysSuffix = formatDaysSuffix(info.etaMs - Date.now());
         finishBig = `<div class="proj-time-line proj-time-finishbig">${formatTimeOnly(info.etaMs)}<span class="proj-time-finish-days">${daysSuffix}</span></div>`;
+        // Qoldi — jonli TAYMER: "Tugash vaqti"gacha real vaqtda qancha qolganini
+        // ko'rsatadi va har tikda muqarrar kamayib boradi.
+        const countdownText = formatCountdown(info.etaMs - Date.now());
+        remainingLine = `<div class="proj-time-line proj-time-remaining">Qoldi: ${countdownText}</div>`;
         costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ~${formatMoney(info.projectedTotalCost)}</div>`;
         el.classList.remove("proj-paused");
       }
-      timeEl.innerHTML = startLabel + startBig + finishLabel + finishBig + empCountLine + costLine;
+      timeEl.innerHTML = startLabel + startBig + finishLabel + finishBig + remainingLine + empCountLine + costLine;
     }
   }
 

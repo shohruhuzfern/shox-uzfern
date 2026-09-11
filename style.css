@@ -935,6 +935,14 @@ body {
   opacity: 0.85;
 }
 
+/* "Qoldi: ..." — jonli taymer qatori (bashorat vaqtidan farqli, real hisoblagich). */
+.proj-time-remaining {
+  color: #f5a623;
+  font-weight: 700;
+  font-size: 13px;
+  margin-top: 1px;
+}
+
 /* Real ish vaqti — belgisiz, faqat qiymat: yashil, sal qalinroq. */
 .proj-time-realbig {
   color: #57d68d;
