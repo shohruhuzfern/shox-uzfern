@@ -332,6 +332,26 @@ function formatDateTime(ms) {
   return pad(d.getDate()) + "." + pad(d.getMonth() + 1) + "." + d.getFullYear() + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
 }
 
+/** Faqat soat:daqiqa (masalan "21:00") — loyiha kartasidagi "Tugash vaqti" uchun. */
+function formatTimeOnly(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+
+/**
+ * `diffMs` (millisekund) ni eng yaqin 0,5 kunga yaxlitlab, " (X kun)" ko'rinishida
+ * qaytaradi — masalan 0,5 yoki 1 yoki 2,5. Agar 0 ga yaxlitlansa — bo'sh satr
+ * qaytariladi (qavs umuman ko'rsatilmaydi).
+ */
+function formatDaysSuffix(diffMs) {
+  const days = diffMs / (24 * 60 * 60 * 1000);
+  const rounded = Math.round(days * 2) / 2;
+  if (rounded <= 0) return "";
+  const text = Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(".", ",");
+  return " (" + text + " kun)";
+}
+
 /* ---------------------- Loyiha nuqtalari joylashuvi ---------------------- */
 
 /**
@@ -653,7 +673,7 @@ function projectLedgerRows(proj, atMs) {
 
 /**
  * Loyihaning joriy vaqt va xarajat holatini hisoblaydi:
- * {total, worked, done, remainingHours, etaMs, paused, workedCost, projectedTotalCost}.
+ * {total, worked, done, remainingManHours, etaMs, paused, workedCost, projectedTotalCost}.
  * `projectedTotalCost` — hozirgacha sarflangan + joriy jamoa shu tezlikda davom etsa
  * ketadigan taxminiy qo'shimcha xarajat (loyiha tugagach — aniq yakuniy xarajat).
  */
@@ -665,26 +685,28 @@ function projectProgressInfo(proj, atMs) {
   const realHours = liveWorkedRealHours(proj, now);
   const count = projectEmployeeCount(proj.id);
   const rateSum = projectHourlyRateSum(proj.id);
-  // Loyiha "tugadi" deb belgilanishi ENDI faqat REAL vaqt (realHours) belgilangan
-  // maqsadga (total) yetganda sodir bo'ladi — ulangan xodimlar soniga BOG'LIQ EMAS.
-  // Xodimlar soni faqat xarajatni (va amaliy bajarish imkoniyatini) belgilaydi,
-  // lekin loyiha necha xodim ulanganidan qat'iy nazar bir xil REAL muddatda tugaydi.
-  const done = total > 0 && realHours >= total;
-  let remainingHours = Math.max(0, total - realHours);
+  // Loyiha "tugadi" deb belgilanishi ISH-SOAT (worked, xodimlar soniga ko'paytirilgan)
+  // maqsadga (total) yetganda sodir bo'ladi: `total` "1 ta xodim ishlaganda" kerak
+  // bo'ladigan vaqtni bildiradi (projectTotalManHours izohiga qarang) — shuning uchun
+  // ko'proq xodim ulansa, loyiha REAL vaqtda tezroq tugaydi (masalan 2 baravar xodim —
+  // 2 baravar tez). Xodimlar soni HAM tugash tezligiga, HAM xarajatga ta'sir qiladi.
+  const done = total > 0 && worked >= total;
+  const remainingManHours = Math.max(0, total - worked);
   let etaMs = null;
   let projectedTotalCost = workedCost;
   if (!done && count > 0) {
-    // Real soat 1:1 (xodimlar soniga ko'paytirilmasdan) o'tadi — shuning uchun qolgan
-    // vaqt to'g'ridan-to'g'ri `remainingHours`, bo'linish shart emas.
-    etaMs = advanceEffectiveHours(now, remainingHours, proj.nightShift);
-    projectedTotalCost = workedCost + remainingHours * rateSum;
+    // Qolgan ish-soat joriy jamoa tezligiga (count) bo'linib, qolgan REAL soatga
+    // aylantiriladi — ko'proq xodim bo'lsa, qolgan real vaqt shunchalik qisqaradi.
+    const remainingRealHours = remainingManHours / count;
+    etaMs = advanceEffectiveHours(now, remainingRealHours, proj.nightShift);
+    projectedTotalCost = workedCost + remainingRealHours * rateSum;
   }
   return {
     total,
     worked: Math.min(worked, total),
     realHours: Math.min(realHours, total),
     done,
-    remainingHours,
+    remainingManHours,
     etaMs,
     paused: !done && count === 0,
     workedCost,
@@ -1479,9 +1501,9 @@ function finishProjectNow(id) {
   commitProjectProgress(proj, now);
   const total = projectTotalManHours(proj);
   if (total > 0) {
+    // "Tugadi" holati ish-soatga (workedManHours) qarab aniqlanadi — qo'lda
+    // tugatishda buni majburan maqsadga yetkazamiz.
     proj.workedManHours = Math.max(Number(proj.workedManHours) || 0, total);
-    // "Tugadi" holati endi REAL vaqtga (workedRealHours) qarab aniqlanadi — shuning
-    // uchun qo'lda tugatishda buni ham majburan maqsadga yetkazish kerak.
     proj.workedRealHours = Math.max(Number(proj.workedRealHours) || 0, total);
   }
   proj.checkpointAt = now;
@@ -1560,20 +1582,24 @@ function updateProjectTimeInfo(proj) {
     // (total > 0) loyihalarda ko'rinadi — allaqachon tugagan loyihani qayta
     // "tugatish"ning ma'nosi yo'q.
     if (finishBtn) finishBtn.classList.toggle("hidden", info.done || info.total <= 0);
-    const startedLine = `<div class="proj-time-line proj-time-started">Boshlandi: ${formatDateTime(proj.startedAt)}</div>`;
+    const startLabel = `<div class="proj-time-line proj-time-label">Boshlandi</div>`;
+    const startBig = `<div class="proj-time-line proj-time-startbig">${formatDateTime(proj.startedAt)}</div>`;
     const empCount = state.connections.filter((c) => c.projectId === proj.id).length;
     const empCountLine = `<div class="proj-time-line proj-time-empcount">Ulangan xodimlar soni: ${empCount}</div>`;
 
     if (info.total <= 0) {
-      timeEl.innerHTML = startedLine;
+      timeEl.innerHTML = startLabel + startBig;
       el.classList.remove("proj-done", "proj-paused");
     } else if (info.done) {
-      // Real ish vaqti — endi belgi (label) siz, faqat yashil/qalin qiymat sifatida.
-      const realLine = `<div class="proj-time-line proj-time-realbig">${formatDurationHours(info.realHours)}</div>`;
+      // Loyiha tugagan haqiqiy (taxminiy) vaqt — oxirgi checkpoint (15s/30s aniqlikda).
+      const finishLabel = `<div class="proj-time-line proj-time-label">Tugash vaqti</div>`;
+      const finishBig = `<div class="proj-time-line proj-time-finishbig">${formatDateTime(proj.checkpointAt)}</div>`;
       const costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ${formatMoney(info.workedCost)}</div>`;
       timeEl.innerHTML =
-        startedLine +
-        realLine +
+        startLabel +
+        startBig +
+        finishLabel +
+        finishBig +
         `<div class="proj-time-line proj-time-done">✓ Tugadi</div>` +
         empCountLine +
         costLine;
@@ -1581,20 +1607,22 @@ function updateProjectTimeInfo(proj) {
       el.classList.remove("proj-paused");
     } else {
       el.classList.remove("proj-done");
-      // Real ish vaqti — nechta xodim ulanganidan qat'iy nazar, jarayon HAQIQATDA
-      // qancha real vaqt davomida faol bo'lganini ko'rsatadi (yashil, qalin, belgisiz).
-      const realLine = `<div class="proj-time-line proj-time-realbig">${formatDurationHours(info.realHours)}</div>`;
-      // Qolgan vaqt — teskari sanoq, xuddi yuqoridagidek (belgisiz), lekin qizil rangda.
-      const countdownLine = `<div class="proj-time-line proj-time-countdown">${formatDurationHours(info.remainingHours)}</div>`;
-      let costLine;
+      const finishLabel = `<div class="proj-time-line proj-time-label">Tugash vaqti</div>`;
+      let finishBig, costLine;
       if (info.paused) {
+        // Xodim ulanmagan — jarayon to'xtab turibdi, tugash vaqtini hisoblab bo'lmaydi.
+        finishBig = `<div class="proj-time-line proj-time-finishbig">— <span class="proj-time-finish-note">(xodim ulanmagan)</span></div>`;
         costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi (hozircha): ${formatMoney(info.workedCost)}</div>`;
         el.classList.add("proj-paused");
       } else {
+        // Tugash vaqti — joriy xodimlar soniga qarab taxmin qilingan (soat:daqiqa),
+        // yonidagi qavsda qancha kun qolgani (eng yaqin 0,5 kunga yaxlitlangan).
+        const daysSuffix = formatDaysSuffix(info.etaMs - Date.now());
+        finishBig = `<div class="proj-time-line proj-time-finishbig">${formatTimeOnly(info.etaMs)}<span class="proj-time-finish-days">${daysSuffix}</span></div>`;
         costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ~${formatMoney(info.projectedTotalCost)}</div>`;
         el.classList.remove("proj-paused");
       }
-      timeEl.innerHTML = startedLine + realLine + countdownLine + empCountLine + costLine;
+      timeEl.innerHTML = startLabel + startBig + finishLabel + finishBig + empCountLine + costLine;
     }
   }
 

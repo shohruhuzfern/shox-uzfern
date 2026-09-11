@@ -902,6 +902,39 @@ body {
   font-weight: 600;
 }
 
+/* Kichik yorliq (masalan "Boshlandi" / "Tugash vaqti") — qiymatdan tepada, xira. */
+.proj-time-label {
+  font-size: 11px;
+  opacity: 0.65;
+  margin-top: 2px;
+}
+
+/* Boshlangan vaqt — katta, yashil, qalin. */
+.proj-time-startbig {
+  color: #57d68d;
+  font-weight: 800;
+  font-size: 17px;
+}
+
+/* Tugash vaqti (soat:daqiqa, yonida necha kun qolgani) — katta, qizil, qalin. */
+.proj-time-finishbig {
+  color: #ff6b6b;
+  font-weight: 800;
+  font-size: 17px;
+}
+
+.proj-time-finish-days {
+  font-weight: 700;
+  font-size: 14px;
+  opacity: 0.85;
+}
+
+.proj-time-finish-note {
+  font-weight: 600;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
 /* Real ish vaqti — belgisiz, faqat qiymat: yashil, sal qalinroq. */
 .proj-time-realbig {
   color: #57d68d;
