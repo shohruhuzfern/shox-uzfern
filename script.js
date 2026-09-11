@@ -382,6 +382,24 @@ function durationPartsToHtml(parts) {
   return parts.hm + daysSpan;
 }
 
+/**
+ * `diffMs`ni BUTUN SOATGA yaxlitlab, {hours, kunHtml} qaytaradi — asosiy raqam
+ * doim aniq soat sifatida ko'rsatiladi (masalan "10 soat"), "kun" esa faqat
+ * QO'SHIMCHA (taxminiy) ma'lumot sifatida, 1 kun = 8 soat hisobida eng yaqin
+ * yarim kunga yaxlitlanadi (masalan 6-10 soat oralig'i ≈ "1 kun"). Kun 0 ga
+ * yaxlitlansa — qavs umuman ko'rsatilmaydi.
+ */
+function formatHoursWithDays(diffMs) {
+  const hours = Math.max(0, Math.round(diffMs / 3600000));
+  const kunRounded = Math.round((hours / 8) * 2) / 2;
+  let kunHtml = "";
+  if (kunRounded > 0) {
+    const kunText = Number.isInteger(kunRounded) ? String(kunRounded) : String(kunRounded).replace(".", ",");
+    kunHtml = `<span class="proj-time-finish-days"> (${kunText} kun)</span>`;
+  }
+  return { hours, kunHtml };
+}
+
 function formatCountdown(diffMs) {
   if (diffMs <= 0) return "0 daqiqa";
   let totalMinutes = Math.floor(diffMs / 60000);
@@ -1633,8 +1651,11 @@ function updateProjectTimeInfo(proj) {
     // qaramay, uzluksiz oldinga sanaydi. Loyiha tugagach — checkpointAt'dagi (taxminiy
     // tugash) qiymatda muzlab qoladi, undan keyin o'smaydi.
     const elapsedEndMs = info.done ? proj.checkpointAt : now;
+    const elapsedInfo = formatHoursWithDays(elapsedEndMs - proj.startedAt);
     const startLabel = `<div class="proj-time-line proj-time-label">Boshlandi</div>`;
-    const startBig = `<div class="proj-time-line proj-time-startbig">${durationPartsToHtml(formatDurationParts(elapsedEndMs - proj.startedAt))}</div>`;
+    // Asosiy raqam — necha SOAT o'tgani (aniq son); qavs ichidagi "kun" faqat
+    // qo'shimcha taxminiy ma'lumot (1 kun = 8 soat hisobida yaxlitlangan).
+    const startBig = `<div class="proj-time-line proj-time-startbig">${elapsedInfo.hours} soat${info.done ? "" : " o'tdi"}${elapsedInfo.kunHtml}</div>`;
     const empCount = state.connections.filter((c) => c.projectId === proj.id).length;
     const empCountLine = `<div class="proj-time-line proj-time-empcount">Ulangan xodimlar soni: ${empCount}</div>`;
 
@@ -1643,9 +1664,9 @@ function updateProjectTimeInfo(proj) {
       el.classList.remove("proj-done", "proj-paused");
     } else if (info.done) {
       // Loyiha tugashi uchun ketgan JAMI real vaqt (taxminan, oxirgi checkpoint aniqligida) —
-      // "Boshlandi" bilan bir xil formatda, faqat muzlatilgan.
+      // "Boshlandi" bilan bir xil son (elapsedInfo), faqat muzlatilgan.
       const finishLabel = `<div class="proj-time-line proj-time-label">Tugash vaqti</div>`;
-      const finishBig = `<div class="proj-time-line proj-time-finishbig">${durationPartsToHtml(formatDurationParts(proj.checkpointAt - proj.startedAt))}</div>`;
+      const finishBig = `<div class="proj-time-line proj-time-finishbig">${elapsedInfo.hours} soat${elapsedInfo.kunHtml}</div>`;
       const costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ${formatMoney(info.workedCost)}</div>`;
       timeEl.innerHTML =
         startLabel +
@@ -1668,9 +1689,11 @@ function updateProjectTimeInfo(proj) {
         el.classList.add("proj-paused");
       } else {
         // Tugash vaqti — endi TESKARI SANOQ: hozirdan bashorat qilingan tugash vaqtigacha
-        // real vaqtda qancha QOLGANI (soat:daqiqa, yonida necha kun qolgani). Har tikda
-        // muqarrar kamayib boradi; xodimlar soni o'zgarsa — sakrab qayta hisoblanadi.
-        finishBig = `<div class="proj-time-line proj-time-finishbig">${durationPartsToHtml(formatDurationParts(info.etaMs - now))}</div>`;
+        // aniq necha SOAT qolgani (asosiy son), yonida taxminiy "kun" (qo'shimcha
+        // ma'lumot). Har tikda muqarrar kamayib boradi; xodimlar soni o'zgarsa —
+        // sakrab qayta hisoblanadi.
+        const remainInfo = formatHoursWithDays(info.etaMs - now);
+        finishBig = `<div class="proj-time-line proj-time-finishbig">${remainInfo.hours} soat qoldi${remainInfo.kunHtml}</div>`;
         costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ~${formatMoney(info.projectedTotalCost)}</div>`;
         el.classList.remove("proj-paused");
       }
