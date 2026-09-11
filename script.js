@@ -736,7 +736,8 @@ function projectLedgerRows(proj, atMs) {
 
 /**
  * Loyihaning joriy vaqt va xarajat holatini hisoblaydi:
- * {total, worked, done, remainingManHours, etaMs, paused, workedCost, projectedTotalCost}.
+ * {total, worked, realHours, done, remainingManHours, remainingRealHours, etaMs, paused,
+ * workedCost, projectedTotalCost}.
  * `projectedTotalCost` — hozirgacha sarflangan + joriy jamoa shu tezlikda davom etsa
  * ketadigan taxminiy qo'shimcha xarajat (loyiha tugagach — aniq yakuniy xarajat).
  */
@@ -757,10 +758,13 @@ function projectProgressInfo(proj, atMs) {
   const remainingManHours = Math.max(0, total - worked);
   let etaMs = null;
   let projectedTotalCost = workedCost;
+  let remainingRealHours = 0;
   if (!done && count > 0) {
-    // Qolgan ish-soat joriy jamoa tezligiga (count) bo'linib, qolgan REAL soatga
-    // aylantiriladi — ko'proq xodim bo'lsa, qolgan real vaqt shunchalik qisqaradi.
-    const remainingRealHours = remainingManHours / count;
+    // Qolgan ish-soat joriy jamoa tezligiga (count) bo'linib, qolgan REAL (sof ish)
+    // soatga aylantiriladi — ko'proq xodim bo'lsa, qolgan real vaqt shunchalik qisqaradi.
+    // Bu qiymat — TAQVIM vaqti emas, faqat ish jadvali ichida o'tadigan soat; shuning
+    // uchun tushlik/tun/yakshanba yoki xodim uzilgan paytda o'zgarmay turadi.
+    remainingRealHours = remainingManHours / count;
     etaMs = advanceEffectiveHours(now, remainingRealHours, proj.nightShift);
     projectedTotalCost = workedCost + remainingRealHours * rateSum;
   }
@@ -770,6 +774,7 @@ function projectProgressInfo(proj, atMs) {
     realHours: Math.min(realHours, total),
     done,
     remainingManHours,
+    remainingRealHours,
     etaMs,
     paused: !done && count === 0,
     workedCost,
@@ -1646,12 +1651,12 @@ function updateProjectTimeInfo(proj) {
     // "tugatish"ning ma'nosi yo'q.
     if (finishBtn) finishBtn.classList.toggle("hidden", info.done || info.total <= 0);
     const now = Date.now();
-    // "Boshlandi" — endi sana emas, xodim ulangandan (loyiha boshlangandan) beri REAL
-    // vaqtda o'tgan muddat: hech qanday ish jadvaliga, tanaffusga yoki xodimlar soniga
-    // qaramay, uzluksiz oldinga sanaydi. Loyiha tugagach — checkpointAt'dagi (taxminiy
-    // tugash) qiymatda muzlab qoladi, undan keyin o'smaydi.
-    const elapsedEndMs = info.done ? proj.checkpointAt : now;
-    const elapsedInfo = formatHoursWithDays(elapsedEndMs - proj.startedAt);
+    // "Boshlandi" — endi SOF ISHLANGAN (real) vaqt: faqat ish jadvali ichida
+    // (9-13, 14-18, tungi smena yoqilgan bo'lsa uning segmentlari ham) VA kamida
+    // bitta xodim ulangan paytlarda oshadi; tushlik/tun/yakshanba yoki xodim
+    // uzilib qolgan paytda TO'XTAB turadi — taqvim (real soat) vaqtiga qaramaydi.
+    // Loyiha tugagach — oxirgi qiymatda muzlab qoladi.
+    const elapsedInfo = formatHoursWithDays(info.realHours * 3600000);
     const startLabel = `<div class="proj-time-line proj-time-label">Boshlandi</div>`;
     // Asosiy raqam — necha SOAT o'tgani (aniq son); qavs ichidagi "kun" faqat
     // qo'shimcha taxminiy ma'lumot (1 kun = 8 soat hisobida yaxlitlangan).
@@ -1688,11 +1693,12 @@ function updateProjectTimeInfo(proj) {
         costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi (hozircha): ${formatMoney(info.workedCost)}</div>`;
         el.classList.add("proj-paused");
       } else {
-        // Tugash vaqti — endi TESKARI SANOQ: hozirdan bashorat qilingan tugash vaqtigacha
-        // aniq necha SOAT qolgani (asosiy son), yonida taxminiy "kun" (qo'shimcha
-        // ma'lumot). Har tikda muqarrar kamayib boradi; xodimlar soni o'zgarsa —
-        // sakrab qayta hisoblanadi.
-        const remainInfo = formatHoursWithDays(info.etaMs - now);
+        // Tugash vaqti — endi SOF ISH VAQTI (teskari sanoq): jamoa joriy tezlikda
+        // faqat ish jadvali ichida ishlasa, tugashiga necha SOAT kerakligi (asosiy
+        // son), yonida taxminiy "kun" (qo'shimcha ma'lumot). Taqvim vaqti emas —
+        // tushlik/tun/yakshanba paytida bu raqam o'zgarmay turadi, faqat ish
+        // vaqtida (yoki xodimlar soni o'zgarsa) kamayadi.
+        const remainInfo = formatHoursWithDays(info.remainingRealHours * 3600000);
         finishBig = `<div class="proj-time-line proj-time-finishbig">${remainInfo.hours} soat qoldi${remainInfo.kunHtml}</div>`;
         costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ~${formatMoney(info.projectedTotalCost)}</div>`;
         el.classList.remove("proj-paused");
