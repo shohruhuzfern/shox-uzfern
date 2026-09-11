@@ -1,7 +1,13 @@
 // Har 15 daqiqada ishga tushadi (GitHub Actions cron orqali): ilovani ochib,
-// har bir joylashtirilgan loyihaning holatini (tugadimi-yo'qmi — tabiiy
-// ravishda vaqti tugab yoki "Tugatish" tugmasi bilan qo'lda) ilovaning o'z
-// hisoblash mantig'i orqali tekshiradi. Yangi tugagan loyiha topilsa:
+// hech bo'lmaganda bir marta BOSHLANGAN (startedAt bor) har bir loyihaning
+// holatini (tugadimi-yo'qmi — tabiiy ravishda vaqti tugab yoki "Tugatish"
+// tugmasi bilan qo'lda) ilovaning o'z hisoblash mantig'i orqali tekshiradi.
+// MUHIM: bu tekshiruv loyiha hozir ish maydonida turgan-turmaganiga (placed)
+// qaramaydi — chunki loyiha tugagach ish maydonidan olib tashlansa ham
+// (masalan kartochkani qayta ishlatish uchun), uning holati (workedManHours
+// va h.k.) `unplaceProject` orqali oldindan saqlab qo'yilgani uchun bu yerda
+// baribir to'g'ri "tugadi" deb aniqlanadi va botga xabar yuboriladi. Yangi
+// tugagan loyiha topilsa:
 //   1) uning yakuniy xodim-vaqt/xarajat jadvali bilan birga Telegramga xabar
 //      yuboradi va Firebase'da "notifiedProjects" ostida belgilaydi (shu
 //      tufayli bir xil loyiha uchun xabar faqat 1 marta yuboriladi);
@@ -28,9 +34,11 @@ function formatDateTime(ms) {
   const { browser, page } = await openLoggedInPage();
   try {
     const result = await page.evaluate(async () => {
-      const placedProjects = state.projects.filter((p) => p.placed);
+      // `p.placed` TEKSHIRILMAYDI — pastdagi izohga qarang: tugagan loyiha ish
+      // maydonidan olib tashlangan bo'lsa ham, shu yerda topilishi kerak.
+      const startedProjects = state.projects.filter((p) => p.startedAt);
       const now = Date.now();
-      const statuses = placedProjects.map((p) => {
+      const statuses = startedProjects.map((p) => {
         const info = projectProgressInfo(p, now);
         const rows = projectLedgerRows(p, now);
         const rowsText = rows.length
