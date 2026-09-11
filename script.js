@@ -359,6 +359,29 @@ function formatDaysSuffix(diffMs) {
  * u shunchaki "hozir"dan "tugash vaqti"gacha bo'lgan taqvim farqi, ish tezligi o'zgarmasa
  * ham vaqt o'tishi bilan pasayadi.
  */
+/**
+ * `diffMs` (millisekund) ni {hm, days} ko'rinishiga ajratadi: `hm` — "soat:daqiqa"
+ * (masalan "9:20"), `days` — to'liq kunlar soni (butun son). Manfiy bo'lsa 0 sifatida
+ * ko'riladi. "Boshlandi" (o'tgan vaqt, yuqoriga sanaydi) va "Tugash vaqti" (qolgan
+ * vaqt, pastga sanaydi) — ikkalasi ham shu bitta formatdan foydalanadi, faqat
+ * berilgan `diffMs` ishorasi (o'tgan/qolgan) farq qiladi.
+ */
+function formatDurationParts(diffMs) {
+  const ms = Math.max(0, diffMs);
+  let totalMinutes = Math.floor(ms / 60000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  totalMinutes -= days * 24 * 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return { hm: hours + ":" + String(minutes).padStart(2, "0"), days };
+}
+
+/** {hm, days} ni tayyor HTML qatoriga aylantiradi (kun qismi kichikroq, xira ko'rinishda). */
+function durationPartsToHtml(parts) {
+  const daysSpan = parts.days > 0 ? `<span class="proj-time-finish-days"> (${parts.days} kun)</span>` : "";
+  return parts.hm + daysSpan;
+}
+
 function formatCountdown(diffMs) {
   if (diffMs <= 0) return "0 daqiqa";
   let totalMinutes = Math.floor(diffMs / 60000);
@@ -1604,8 +1627,14 @@ function updateProjectTimeInfo(proj) {
     // (total > 0) loyihalarda ko'rinadi — allaqachon tugagan loyihani qayta
     // "tugatish"ning ma'nosi yo'q.
     if (finishBtn) finishBtn.classList.toggle("hidden", info.done || info.total <= 0);
+    const now = Date.now();
+    // "Boshlandi" — endi sana emas, xodim ulangandan (loyiha boshlangandan) beri REAL
+    // vaqtda o'tgan muddat: hech qanday ish jadvaliga, tanaffusga yoki xodimlar soniga
+    // qaramay, uzluksiz oldinga sanaydi. Loyiha tugagach — checkpointAt'dagi (taxminiy
+    // tugash) qiymatda muzlab qoladi, undan keyin o'smaydi.
+    const elapsedEndMs = info.done ? proj.checkpointAt : now;
     const startLabel = `<div class="proj-time-line proj-time-label">Boshlandi</div>`;
-    const startBig = `<div class="proj-time-line proj-time-startbig">${formatDateTime(proj.startedAt)}</div>`;
+    const startBig = `<div class="proj-time-line proj-time-startbig">${durationPartsToHtml(formatDurationParts(elapsedEndMs - proj.startedAt))}</div>`;
     const empCount = state.connections.filter((c) => c.projectId === proj.id).length;
     const empCountLine = `<div class="proj-time-line proj-time-empcount">Ulangan xodimlar soni: ${empCount}</div>`;
 
@@ -1613,9 +1642,10 @@ function updateProjectTimeInfo(proj) {
       timeEl.innerHTML = startLabel + startBig;
       el.classList.remove("proj-done", "proj-paused");
     } else if (info.done) {
-      // Loyiha tugagan haqiqiy (taxminiy) vaqt — oxirgi checkpoint (15s/30s aniqlikda).
+      // Loyiha tugashi uchun ketgan JAMI real vaqt (taxminan, oxirgi checkpoint aniqligida) —
+      // "Boshlandi" bilan bir xil formatda, faqat muzlatilgan.
       const finishLabel = `<div class="proj-time-line proj-time-label">Tugash vaqti</div>`;
-      const finishBig = `<div class="proj-time-line proj-time-finishbig">${formatDateTime(proj.checkpointAt)}</div>`;
+      const finishBig = `<div class="proj-time-line proj-time-finishbig">${durationPartsToHtml(formatDurationParts(proj.checkpointAt - proj.startedAt))}</div>`;
       const costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ${formatMoney(info.workedCost)}</div>`;
       timeEl.innerHTML =
         startLabel +
@@ -1630,26 +1660,21 @@ function updateProjectTimeInfo(proj) {
     } else {
       el.classList.remove("proj-done");
       const finishLabel = `<div class="proj-time-line proj-time-label">Tugash vaqti</div>`;
-      let finishBig, costLine, remainingLine = "";
+      let finishBig, costLine;
       if (info.paused) {
         // Xodim ulanmagan — jarayon to'xtab turibdi, tugash vaqtini hisoblab bo'lmaydi.
         finishBig = `<div class="proj-time-line proj-time-finishbig">— <span class="proj-time-finish-note">(xodim ulanmagan)</span></div>`;
         costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi (hozircha): ${formatMoney(info.workedCost)}</div>`;
         el.classList.add("proj-paused");
       } else {
-        // Tugash vaqti — joriy xodimlar soniga qarab taxmin qilingan BASHORAT (soat:daqiqa,
-        // yonidagi qavsda qancha kun qolgani, eng yaqin 0,5 kunga yaxlitlangan). Bu qiymat
-        // ish tezligi (xodimlar soni) o'zgarmasa, taxminan o'sha-o'sha turadi.
-        const daysSuffix = formatDaysSuffix(info.etaMs - Date.now());
-        finishBig = `<div class="proj-time-line proj-time-finishbig">${formatTimeOnly(info.etaMs)}<span class="proj-time-finish-days">${daysSuffix}</span></div>`;
-        // Qoldi — jonli TAYMER: "Tugash vaqti"gacha real vaqtda qancha qolganini
-        // ko'rsatadi va har tikda muqarrar kamayib boradi.
-        const countdownText = formatCountdown(info.etaMs - Date.now());
-        remainingLine = `<div class="proj-time-line proj-time-remaining">Qoldi: ${countdownText}</div>`;
+        // Tugash vaqti — endi TESKARI SANOQ: hozirdan bashorat qilingan tugash vaqtigacha
+        // real vaqtda qancha QOLGANI (soat:daqiqa, yonida necha kun qolgani). Har tikda
+        // muqarrar kamayib boradi; xodimlar soni o'zgarsa — sakrab qayta hisoblanadi.
+        finishBig = `<div class="proj-time-line proj-time-finishbig">${durationPartsToHtml(formatDurationParts(info.etaMs - now))}</div>`;
         costLine = `<div class="proj-time-line proj-time-cost">Mehnat narxi: ~${formatMoney(info.projectedTotalCost)}</div>`;
         el.classList.remove("proj-paused");
       }
-      timeEl.innerHTML = startLabel + startBig + finishLabel + finishBig + remainingLine + empCountLine + costLine;
+      timeEl.innerHTML = startLabel + startBig + finishLabel + finishBig + empCountLine + costLine;
     }
   }
 
